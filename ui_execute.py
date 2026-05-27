@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
     QTableWidgetItem,
     QTextEdit,
     QHeaderView,
-    QGroupBox,
+    QFrame,
     QMessageBox,
     QSplitter,
     QGraphicsView,
@@ -21,14 +21,16 @@ from PyQt5.QtWidgets import (
     QMenu,
     QTableView,
     QGraphicsPathItem,
-    QTabWidget,
     QAction,
     QProgressBar,
     QDialog,
     QDialogButtonBox,
     QCheckBox,
+    QGraphicsDropShadowEffect,
 )
-from PyQt5.QtCore import Qt, QPointF, pyqtSignal, QRectF, QLineF
+from PyQt5.QtCore import Qt, QPointF, pyqtSignal, QRectF
+
+import utils
 from PyQt5.QtGui import (
     QFont,
     QColor,
@@ -121,13 +123,20 @@ class ExecuteNodeItem(QGraphicsPathItem):
 
         self.setFlag(QGraphicsPathItem.ItemIsSelectable)
 
-        # 修复显示不全：动态计算节点物理宽度并增加悬浮提示
         font = QFont("Microsoft YaHei", 9, QFont.Bold)
         metrics = QFontMetrics(font)
         text_width = metrics.boundingRect(text).width()
         self.width = min(max(160, text_width + 40), 350)
         self.height = 60
         self.setToolTip(f"[{action_type}] {text}")
+
+        self.setAcceptHoverEvents(True)
+
+        shadow = QGraphicsDropShadowEffect()
+        shadow.setBlurRadius(8)
+        shadow.setColor(QColor(0, 0, 0, 40))
+        shadow.setOffset(2, 2)
+        self.setGraphicsEffect(shadow)
 
         self.text_item = QGraphicsTextItem(text, self)
         self.text_item.setFont(font)
@@ -137,7 +146,7 @@ class ExecuteNodeItem(QGraphicsPathItem):
         self.type_item = QGraphicsTextItem(action_type, self)
         self.type_item.setFont(QFont("Arial", 8, QFont.Bold))
         self.type_item.setDefaultTextColor(Qt.white)
-        self.type_item.setPos(5, 0)
+        self.type_item.setPos(5, 2)
 
     def set_status(self, status):
         self.status = status
@@ -149,53 +158,48 @@ class ExecuteNodeItem(QGraphicsPathItem):
     def paint(self, painter, option, widget):
         painter.setRenderHint(QPainter.Antialiasing)
 
+        status_colors = {
+            "pending": ("#607D8B", "#B0BEC5"),
+            "success": ("#43A047", "#66BB6A"),
+            "error":   ("#E53935", "#EF5350"),
+        }
+        header_color, border_color = status_colors.get(self.status, status_colors["pending"])
+
         if self.isSelected():
             pen = QPen(QColor("#2196F3"), 3)
-        elif self.status == "success":
-            pen = QPen(QColor("#4CAF50"), 3)
-        elif self.status == "error":
-            pen = QPen(QColor("#F44336"), 3)
         else:
-            pen = QPen(QColor("#9E9E9E"), 2)
-
+            pen = QPen(QColor(border_color), 2)
         painter.setPen(pen)
         painter.setBrush(QBrush(QColor("white")))
         rect = QRectF(0, 0, self.width, self.height)
-        painter.drawRoundedRect(rect, 5, 5)
-
-        header_color = "#607D8B"
-        if self.status == "success":
-            header_color = "#4CAF50"
-        if self.status == "error":
-            header_color = "#F44336"
+        painter.drawRoundedRect(rect, 6, 6)
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(QColor(header_color)))
-        header_rect = QRectF(0, 0, self.width, 20)
-        painter.drawRoundedRect(header_rect, 5, 5)
-        painter.drawRect(QRectF(0, 10, self.width, 10))
+        header_rect = QRectF(0, 0, self.width, 22)
+        painter.drawRoundedRect(header_rect, 6, 6)
+        painter.drawRect(QRectF(0, 11, self.width, 11))
 
-        painter.setBrush(QBrush(QColor("#ccc")))
-        painter.setPen(QPen(QColor("#666"), 1))
+        painter.setBrush(QBrush(QColor("#BDBDBD")))
+        painter.setPen(QPen(QColor("#757575"), 1))
+        port_r = 4
         if self.action_type != "数据源导入":
-            painter.drawEllipse(QPointF(0, self.height / 2), 4, 4)
-        painter.drawEllipse(QPointF(self.width, self.height / 2), 4, 4)
+            painter.drawEllipse(QPointF(0, self.height / 2), port_r, port_r)
+        painter.drawEllipse(QPointF(self.width, self.height / 2), port_r, port_r)
 
         if self.status == "success":
             painter.setFont(QFont("Microsoft YaHei", 8))
             if self.has_data:
                 painter.setPen(QPen(QColor("#4CAF50")))
                 painter.drawText(
-                    QRectF(self.width - 45, self.height - 20, 40, 20),
-                    Qt.AlignRight | Qt.AlignVCenter,
-                    "[保留]",
+                    QRectF(self.width - 42, self.height - 18, 36, 16),
+                    Qt.AlignRight | Qt.AlignVCenter, "OK"
                 )
             else:
-                painter.setPen(QPen(QColor("#9E9E9E")))
+                painter.setPen(QPen(QColor("#BDBDBD")))
                 painter.drawText(
-                    QRectF(self.width - 45, self.height - 20, 40, 20),
-                    Qt.AlignRight | Qt.AlignVCenter,
-                    "[释放]",
+                    QRectF(self.width - 42, self.height - 18, 36, 16),
+                    Qt.AlignRight | Qt.AlignVCenter, "~"
                 )
 
 
@@ -216,17 +220,7 @@ class WorkflowGraphView(QGraphicsView):
         self.node_items_dict = {}
 
     def drawBackground(self, painter, rect):
-        painter.fillRect(rect, QColor("#f0f2f5"))
-        grid_size = 20
-        left = int(rect.left()) - (int(rect.left()) % grid_size)
-        top = int(rect.top()) - (int(rect.top()) % grid_size)
-        lines = []
-        for x in range(left, int(rect.right()), grid_size):
-            lines.append(QLineF(x, rect.top(), x, rect.bottom()))
-        for y in range(top, int(rect.bottom()), grid_size):
-            lines.append(QLineF(rect.left(), y, rect.right(), y))
-        painter.setPen(QPen(QColor("#e0e4e8"), 1))
-        painter.drawLines(lines)
+        utils.draw_grid_background(painter, rect)
 
     def render_workflow(self, workflow_config):
         self.scene.clear()
@@ -300,83 +294,14 @@ class WorkflowGraphView(QGraphicsView):
                 if dep_item:
                     item_edges_out[dep_item].append(curr_item)
 
-        undirected_adj = {n: [] for n in unique_items}
-        for n in unique_items:
-            for dest in item_edges_out[n]:
-                undirected_adj[n].append(dest)
-                undirected_adj[dest].append(n)
-
-        visited = set()
-        components = []
-        for n in unique_items:
-            if n not in visited:
-                comp = []
-                q = [n]
-                visited.add(n)
-                while q:
-                    curr = q.pop(0)
-                    comp.append(curr)
-                    for neighbor in undirected_adj[curr]:
-                        if neighbor not in visited:
-                            visited.add(neighbor)
-                            q.append(neighbor)
-                components.append(comp)
-
-        x_spacing = 320
-        y_spacing = 140
-        current_base_y = 100
-
-        for comp_nodes in components:
-            in_degree = {n: 0 for n in comp_nodes}
-            adj_list = {n: [] for n in comp_nodes}
-            for n in comp_nodes:
-                for dest in item_edges_out[n]:
-                    adj_list[n].append(dest)
-                    in_degree[dest] += 1
-
-            queue = [n for n in comp_nodes if in_degree[n] == 0]
-            layer_map = {n: 0 for n in queue}
-
-            while queue:
-                curr = queue.pop(0)
-                for neighbor in adj_list[curr]:
-                    layer_map[neighbor] = max(
-                        layer_map.get(neighbor, 0), layer_map[curr] + 1
-                    )
-                    in_degree[neighbor] -= 1
-                    if in_degree[neighbor] == 0:
-                        queue.append(neighbor)
-
-            layers = {}
-            for n in comp_nodes:
-                l = layer_map.get(n, 0)
-                if l not in layers:
-                    layers[l] = []
-                layers[l].append(n)
-
-            for l in layers:
-                layers[l].sort(key=lambda n: n.table_name)
-
-            max_nodes_in_layer = (
-                max([len(lst) for lst in layers.values()]) if layers else 1
-            )
-            comp_height = (max_nodes_in_layer - 1) * y_spacing
-            comp_center_y = current_base_y + comp_height / 2
-
-            for l_idx in sorted(layers.keys()):
-                layer_nodes = layers[l_idx]
-                num_nodes = len(layer_nodes)
-                layer_height = (num_nodes - 1) * y_spacing
-                start_y = comp_center_y - layer_height / 2
-
-                stagger_offset = (y_spacing * 0.5) if (l_idx % 2 != 0) else 0
-
-                for i, node in enumerate(layer_nodes):
-                    x = 50 + l_idx * x_spacing
-                    y = start_y + i * y_spacing + stagger_offset
-                    node.setPos(x, y)
-
-            current_base_y += comp_height + y_spacing * 2.0
+        utils.topological_layout(
+            unique_items,
+            get_outgoing=lambda n: item_edges_out.get(n, []),
+            get_sort_key=lambda n: n.table_name,
+            set_pos_func=lambda n, x, y: n.setPos(x, y),
+            start_x=50,
+            start_y=100,
+        )
 
         for src, dests in item_edges_out.items():
             for dest in dests:
@@ -390,26 +315,15 @@ class WorkflowGraphView(QGraphicsView):
         sp = start_item.pos() + QPointF(start_item.width, start_item.height / 2)
         ep = end_item.pos() + QPointF(0, end_item.height / 2)
 
-        path = QPainterPath()
-        path.moveTo(sp)
-        dist = min(max(abs(ep.x() - sp.x()) * 0.4, 60), 200)
-        ctrl1 = QPointF(sp.x() + dist, sp.y())
-        ctrl2 = QPointF(ep.x() - dist, ep.y())
-        path.cubicTo(ctrl1, ctrl2, ep)
-
-        edge = self.scene.addPath(path, QPen(QColor("#B0BEC5"), 2))
+        edge = self.scene.addPath(
+            utils.bezier_edge_path(sp, ep), QPen(QColor("#B0BEC5"), 2)
+        )
         edge.setZValue(-1)
 
-        arrow_size = 8
-        polygon = QPolygonF(
-            [
-                ep,
-                ep + QPointF(-arrow_size, -arrow_size / 2),
-                ep + QPointF(-arrow_size, arrow_size / 2),
-            ]
-        )
         arrow_item = self.scene.addPolygon(
-            polygon, QPen(Qt.NoPen), QBrush(QColor("#B0BEC5"))
+            utils.arrow_polygon(ep, size=8),
+            QPen(Qt.NoPen),
+            QBrush(QColor("#B0BEC5")),
         )
         arrow_item.setZValue(-1)
 
@@ -495,134 +409,206 @@ class ExecuteModeWidget(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 5, 10, 10)
+        layout.setContentsMargins(6, 4, 6, 4)
+        layout.setSpacing(4)
 
-        top_group = QGroupBox()
-        top_group.setFixedHeight(65)
-        top_group.setStyleSheet(
-            "QGroupBox { border: 1px solid #ddd; background-color: white; border-radius: 4px; }"
+        # === Top Toolbar ===
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+
+        self.btn_load_json = QPushButton("导入工作流")
+        self.btn_load_json.setFixedHeight(32)
+        self.btn_load_json.setCursor(Qt.PointingHandCursor)
+        self.btn_load_json.setStyleSheet(
+            "QPushButton { background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px 14px; font-weight: bold; }"
+            "QPushButton:hover { background: #f0f0f0; }"
         )
-        top_layout = QHBoxLayout(top_group)
-        top_layout.setContentsMargins(15, 0, 15, 0)
-
-        self.btn_load_json = QPushButton("[导入] 工作流配置")
-        self.btn_load_json.setFixedHeight(35)
         self.btn_load_json.clicked.connect(self.load_workflow_config)
 
-        self.btn_mapping = QPushButton("[设置] 数据源映射")
-        self.btn_mapping.setFixedHeight(35)
-        self.btn_mapping.setStyleSheet("color: #E65100; font-weight: bold;")
+        self.btn_mapping = QPushButton("数据源映射")
+        self.btn_mapping.setFixedHeight(32)
+        self.btn_mapping.setCursor(Qt.PointingHandCursor)
+        self.btn_mapping.setStyleSheet(
+            "QPushButton { background: white; border: 1px solid #ccc; border-radius: 4px; padding: 4px 14px; color: #E65100; font-weight: bold; }"
+            "QPushButton:hover { background: #FFF3E0; }"
+        )
         self.btn_mapping.clicked.connect(self.show_mapping_dialog)
         self.btn_mapping.setEnabled(False)
 
-        self.cb_debug = QCheckBox("调试模式 (保留所有过程表)")
-        self.cb_debug.setStyleSheet("font-weight: bold; color: #1976D2;")
-        self.cb_debug.setToolTip(
-            "开启后，引擎将保留所有节点的中间数据以便随时点击预览。\n注意：大数据量下会消耗更多内存！"
-        )
+        sep1 = QFrame()
+        sep1.setFrameShape(QFrame.VLine)
+        sep1.setStyleSheet("color: #ddd;")
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFixedHeight(20)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar { border: 1px solid #ccc; border-radius: 10px; background-color: #f0f0f0; }
-            QProgressBar::chunk { background-color: #4CAF50; border-radius: 10px; }
-        """)
-
-        self.lbl_status = QLabel("就绪")
-        self.lbl_status.setStyleSheet(
-            "color: #666; font-weight: bold; min-width: 150px;"
-        )
-
-        self.btn_run = QPushButton("[启动] 执行引擎")
-        self.btn_run.setFixedHeight(35)
+        self.btn_run = QPushButton("▶ 运行引擎")
+        self.btn_run.setFixedHeight(32)
+        self.btn_run.setCursor(Qt.PointingHandCursor)
         self.btn_run.setStyleSheet(
-            "background-color: #E91E63; color: white; font-weight: bold; padding: 0 30px; border-radius: 4px;"
+            "background-color: #E91E63; color: white; font-weight: bold; padding: 4px 20px; border-radius: 4px;"
         )
         self.btn_run.clicked.connect(self.run_engine)
         self.btn_run.setEnabled(False)
 
-        top_layout.addWidget(self.btn_load_json)
-        top_layout.addWidget(self.btn_mapping)
-        top_layout.addSpacing(20)
-        top_layout.addWidget(self.cb_debug)
-        top_layout.addSpacing(20)
-        top_layout.addWidget(self.progress_bar, stretch=1)
-        top_layout.addSpacing(10)
-        top_layout.addWidget(self.lbl_status)
-        top_layout.addWidget(self.btn_run)
+        sep2 = QFrame()
+        sep2.setFrameShape(QFrame.VLine)
+        sep2.setStyleSheet("color: #ddd;")
 
-        layout.addWidget(top_group)
+        self.cb_debug = QCheckBox("保留中间表")
+        self.cb_debug.setStyleSheet("font-weight: bold; color: #1976D2;")
+        self.cb_debug.setToolTip("开启后引擎保留所有节点的中间数据以便预览。")
 
-        self.main_splitter = QSplitter(Qt.Vertical)
+        self.lbl_status = QLabel("就绪")
+        self.lbl_status.setStyleSheet("color: #666; font-weight: bold; font-size: 12px;")
 
-        canvas_panel = QWidget()
-        canvas_layout = QVBoxLayout(canvas_panel)
-        canvas_layout.setContentsMargins(0, 0, 0, 0)
-        lbl_canvas = QLabel(" 监控大盘 (按住中键漫游 / 滚轮缩放 / 右键导出)")
-        lbl_canvas.setFont(QFont("Arial", 10, QFont.Bold))
+        toolbar.addWidget(self.btn_load_json)
+        toolbar.addWidget(self.btn_mapping)
+        toolbar.addWidget(sep1)
+        toolbar.addWidget(self.btn_run)
+        toolbar.addWidget(sep2)
+        toolbar.addWidget(self.cb_debug)
+        toolbar.addStretch(1)
+        toolbar.addWidget(self.lbl_status)
+        layout.addLayout(toolbar)
+
+        # === Main Content: Info Panel | Graph + Bottom ===
+        self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # -- Left: Workflow Info Panel --
+        info_panel = QWidget()
+        info_panel.setMaximumWidth(220)
+        info_panel.setMinimumWidth(140)
+        info_panel.setStyleSheet("background: #f8f9fa; border: 1px solid #ddd; border-radius: 4px;")
+        info_layout = QVBoxLayout(info_panel)
+        info_layout.setContentsMargins(8, 8, 8, 8)
+        info_layout.setSpacing(6)
+
+        info_title = QLabel("工作流信息")
+        info_title.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
+        info_title.setStyleSheet("border: none;")
+
+        self.info_name = QLabel("未加载")
+        self.info_name.setWordWrap(True)
+        self.info_name.setStyleSheet("border: none; color: #333; font-size: 11px;")
+
+        self.info_steps = QLabel("步骤: —")
+        self.info_steps.setStyleSheet("border: none; color: #666; font-size: 11px;")
+
+        self.info_files_label = QLabel("数据源:")
+        self.info_files_label.setStyleSheet("border: none; color: #666; font-size: 10px; font-weight: bold;")
+        self.info_files = QLabel("—")
+        self.info_files.setWordWrap(True)
+        self.info_files.setStyleSheet("border: none; color: #999; font-size: 10px;")
+
+        info_layout.addWidget(info_title)
+        info_layout.addWidget(self.info_name)
+        info_layout.addWidget(self.info_steps)
+        info_layout.addWidget(self.info_files_label)
+        info_layout.addWidget(self.info_files)
+        info_layout.addStretch(1)
+
+        # -- Right: Graph + Bottom Content --
+        right_splitter = QSplitter(Qt.Vertical)
+
+        graph_panel = QWidget()
+        graph_layout = QVBoxLayout(graph_panel)
+        graph_layout.setContentsMargins(0, 0, 0, 0)
+        graph_layout.setSpacing(2)
+        lbl_graph = QLabel(" 监控大盘 (中键漫游 | Ctrl+滚轮缩放 | 右键导出)")
+        lbl_graph.setFont(QFont("Arial", 9, QFont.Bold))
+        lbl_graph.setStyleSheet("color: #666; padding: 2px;")
 
         self.graph_view = WorkflowGraphView()
         self.graph_view.node_clicked.connect(self.on_node_clicked)
         self.graph_view.request_export.connect(self.export_single_table)
 
-        canvas_layout.addWidget(lbl_canvas)
-        canvas_layout.addWidget(self.graph_view)
+        graph_layout.addWidget(lbl_graph)
+        graph_layout.addWidget(self.graph_view)
 
-        self.bottom_tabs = QTabWidget()
-        self.bottom_tabs.setStyleSheet("""
-            QTabBar::tab { padding: 8px 15px; font-weight: bold; background: #e0e0e0; border: 1px solid #ccc; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; }
-            QTabBar::tab:selected { background: white; color: #2196F3; }
-            QTabWidget::pane { border: 1px solid #ccc; background: white; }
-        """)
+        # -- Bottom: Preview | Logs (side by side) --
+        bottom_splitter = QSplitter(Qt.Horizontal)
 
-        self.tab_preview = QWidget()
-        preview_layout = QVBoxLayout(self.tab_preview)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
+        # Preview
+        preview_panel = QWidget()
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(4, 4, 4, 4)
+        preview_layout.setSpacing(2)
 
         preview_header = QHBoxLayout()
-        self.preview_title = QLabel("请在上方画布中点击任意节点进行预览")
-        self.preview_title.setStyleSheet("padding: 5px; color: gray;")
+        self.preview_title = QLabel("点击画布节点预览数据")
+        self.preview_title.setStyleSheet("padding: 3px; color: gray; font-size: 11px;")
 
-        self.btn_export_preview = QPushButton("[导出] 当前表")
+        self.btn_export_preview = QPushButton("导出")
+        self.btn_export_preview.setFixedHeight(24)
         self.btn_export_preview.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; padding: 4px 15px; border-radius: 4px;"
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 2px 12px; border-radius: 3px; font-size: 11px;"
         )
         self.btn_export_preview.hide()
         self.btn_export_preview.clicked.connect(self.export_current_table)
 
-        preview_header.addWidget(self.preview_title)
-        preview_header.addStretch(1)
+        preview_header.addWidget(self.preview_title, stretch=1)
         preview_header.addWidget(self.btn_export_preview)
 
         self.result_table = QTableView()
         self.result_table.setStyleSheet(
-            "QTableView { border: none; gridline-color: #eee; } QHeaderView::section { background-color: #E1F5FE; font-weight: bold; border: 1px solid #ccc; padding: 4px; }"
+            "QTableView { border: 1px solid #eee; gridline-color: #f0f0f0; } "
+            "QHeaderView::section { background-color: #E1F5FE; font-weight: bold; border: 1px solid #ddd; padding: 3px; font-size: 11px; }"
         )
         self.result_table.setAlternatingRowColors(True)
 
         preview_layout.addLayout(preview_header)
         preview_layout.addWidget(self.result_table)
 
-        self.tab_logs = QWidget()
-        logs_layout = QVBoxLayout(self.tab_logs)
-        logs_layout.setContentsMargins(0, 0, 0, 0)
+        # Logs
+        logs_panel = QWidget()
+        logs_layout = QVBoxLayout(logs_panel)
+        logs_layout.setContentsMargins(4, 4, 4, 4)
+        logs_layout.setSpacing(2)
+        logs_label = QLabel(" 运行日志")
+        logs_label.setFont(QFont("Consolas", 9, QFont.Bold))
+        logs_label.setStyleSheet("color: #888; padding: 2px;")
+
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setStyleSheet(
-            "background-color: #1E1E1E; color: #D4D4D4; font-family: Consolas; border: none; padding: 8px; font-size: 13px;"
+            "background-color: #1E1E1E; color: #D4D4D4; font-family: Consolas; border: 1px solid #333; padding: 6px; font-size: 12px;"
         )
+
+        logs_layout.addWidget(logs_label)
         logs_layout.addWidget(self.log_output)
 
-        self.bottom_tabs.addTab(self.tab_preview, "数据预览")
-        self.bottom_tabs.addTab(self.tab_logs, "运行日志")
+        bottom_splitter.addWidget(preview_panel)
+        bottom_splitter.addWidget(logs_panel)
+        bottom_splitter.setSizes([600, 400])
 
-        self.main_splitter.addWidget(canvas_panel)
-        self.main_splitter.addWidget(self.bottom_tabs)
-        self.main_splitter.setStretchFactor(0, 6)
-        self.main_splitter.setStretchFactor(1, 4)
+        right_splitter.addWidget(graph_panel)
+        right_splitter.addWidget(bottom_splitter)
+        right_splitter.setStretchFactor(0, 6)
+        right_splitter.setStretchFactor(1, 4)
 
-        layout.addWidget(self.main_splitter)
+        self.main_splitter.addWidget(info_panel)
+        self.main_splitter.addWidget(right_splitter)
+        self.main_splitter.setSizes([180, 1100])
+
+        layout.addWidget(self.main_splitter, stretch=1)
+
+        # === Bottom Status Bar ===
+        status_bar = QHBoxLayout()
+        status_bar.setSpacing(8)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setFixedHeight(18)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%v / %m 步")
+        self.progress_bar.setStyleSheet("""
+            QProgressBar { border: 1px solid #ccc; border-radius: 8px; background-color: #f0f0f0; text-align: center; font-size: 11px; }
+            QProgressBar::chunk { background-color: #4CAF50; border-radius: 8px; }
+        """)
+
+        self.status_detail = QLabel("")
+        self.status_detail.setStyleSheet("color: #999; font-size: 11px;")
+
+        status_bar.addWidget(self.progress_bar, stretch=1)
+        status_bar.addWidget(self.status_detail)
+        layout.addLayout(status_bar)
 
     def show_mapping_dialog(self):
         dlg = DataSourceMappingDialog(self.file_mapping, self.file_context, self)
@@ -722,14 +708,29 @@ class ExecuteModeWidget(QWidget):
 
         self.btn_mapping.setEnabled(True)
         self.btn_run.setEnabled(True)
+        self.btn_run.setStyleSheet(
+            "background-color: #E91E63; color: white; font-weight: bold; padding: 4px 20px; border-radius: 4px;"
+        )
+        self.btn_run.setText("▶ 运行引擎")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%v / %m 步")
         self.lbl_status.setText("等待执行...")
         self.btn_export_preview.hide()
 
         wf_name = self.workflow_config.get("workflow_name", "未命名")
         steps_count = len(self.workflow_config.get("steps", []))
         self.log_print(f"[成功] 成功加载工作流: {wf_name} (共 {steps_count} 个节点)")
+
+        # Update info panel
+        self.info_name.setText(wf_name)
+        self.info_steps.setText(f"步骤: {steps_count}")
+        files = [s["params"].get("file_path", "?") for s in self.workflow_config.get("steps", [])
+                 if s.get("action") == "load_file"]
+        if files:
+            self.info_files.setText("\n".join(os.path.basename(f) for f in files))
+        else:
+            self.info_files.setText("(无数据源)")
 
     def get_state(self):
         return {
@@ -745,7 +746,6 @@ class ExecuteModeWidget(QWidget):
         if not table_name:
             return
 
-        self.bottom_tabs.setCurrentIndex(0)
         self.current_preview_table = table_name
 
         if table_name in self.final_pool:
@@ -774,21 +774,24 @@ class ExecuteModeWidget(QWidget):
         if not self.workflow_config:
             return
 
-        self.bottom_tabs.setCurrentIndex(1)
         self.log_output.clear()
 
         self.btn_run.setEnabled(False)
-        self.btn_run.setText("引擎运转中...")
+        self.btn_run.setText("⏳ 执行中...")
         self.btn_run.setStyleSheet(
-            "background-color: #9E9E9E; color: white; font-weight: bold; padding: 0 30px; border-radius: 4px;"
+            "background-color: #9E9E9E; color: white; font-weight: bold; padding: 4px 20px; border-radius: 4px;"
         )
         self.btn_load_json.setEnabled(False)
         self.btn_mapping.setEnabled(False)
         self.cb_debug.setEnabled(False)
 
-        self.progress_bar.setRange(0, 0)
+        total_steps = len(self.workflow_config.get("steps", []))
+        self.progress_bar.setRange(0, total_steps)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat(f"%v / {total_steps} 步")
         self.lbl_status.setText("正在跑批计算...")
         self.lbl_status.setStyleSheet("color: #E65100; font-weight: bold;")
+        self.status_detail.setText("")
 
         for item in self.graph_view.node_items_dict.values():
             item.has_data = False
@@ -800,27 +803,28 @@ class ExecuteModeWidget(QWidget):
         )
 
         self.engine_thread.log_signal.connect(self.log_print)
+        self.engine_thread.progress_signal.connect(self.progress_bar.setValue)
         self.engine_thread.finished_signal.connect(self.on_engine_finished)
         self.engine_thread.start()
 
     def on_engine_finished(self, success, pool):
         self.btn_run.setEnabled(True)
-        self.btn_run.setText("[运行] 再次执行")
+        self.btn_run.setText("▶ 运行引擎")
         self.btn_run.setStyleSheet(
-            "background-color: #E91E63; color: white; font-weight: bold; padding: 0 30px; border-radius: 4px;"
+            "background-color: #E91E63; color: white; font-weight: bold; padding: 4px 20px; border-radius: 4px;"
         )
         self.btn_load_json.setEnabled(True)
         self.btn_mapping.setEnabled(True)
         self.cb_debug.setEnabled(True)
 
-        self.progress_bar.setRange(0, 100)
-
         if success:
-            self.progress_bar.setValue(100)
-            self.lbl_status.setText("[成功] 执行完毕")
+            self.progress_bar.setValue(self.progress_bar.maximum())
+            self.progress_bar.setFormat("完成")
+            self.lbl_status.setText("执行完毕")
             self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
-            self.graph_view.set_all_nodes_status("success")
+            self.status_detail.setText(f"输出 {len(pool)} 张结果表")
 
+            self.graph_view.set_all_nodes_status("success")
             self.final_pool = pool
 
             for item in set(self.graph_view.node_items_dict.values()):
@@ -829,16 +833,19 @@ class ExecuteModeWidget(QWidget):
                 item.update()
 
             QMessageBox.information(
-                self, "成功", "工作流执行完毕！\n请点击下方【数据预览】标签查看结果。"
+                self, "成功", "工作流执行完毕！\n请在下方数据预览区域点击节点查看结果。"
             )
         else:
             self.progress_bar.setValue(0)
-            self.lbl_status.setText("[失败] 执行中断")
+            self.progress_bar.setFormat("失败")
+            self.lbl_status.setText("执行中断")
             self.lbl_status.setStyleSheet("color: #F44336; font-weight: bold;")
+            self.status_detail.setText("请查看运行日志定位问题")
+
             self.graph_view.set_all_nodes_status("error")
 
             QMessageBox.critical(
-                self, "执行失败", "工作流执行遇到错误，请查看【运行日志】定位问题节点。"
+                self, "执行失败", "工作流执行遇到错误，请查看右侧运行日志定位问题节点。"
             )
 
     def export_current_table(self):

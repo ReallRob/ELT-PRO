@@ -313,36 +313,34 @@ def sort_data(df, sort_rules, col_type="col_name"):
 # 基于正则的严格 AST 公式解析
 # ==========================================
 def calc_col(df, new_col_name, formula):
-    """
-    智能公式列计算。强制使用方括号标识变量 [列名]，杜绝长短字符串替换导致的脏数据。
-    """
+    """公式列计算。强制使用方括号 [列名] 标识变量，避免歧义。"""
     df = df.copy()
     if formula.startswith("="):
         formula = formula[1:]
 
+    def replace_func(match):
+        col_name = match.group(1).strip()
+        if col_name not in df.columns:
+            raise KeyError(f"数据表中不存在列: 【{col_name}】")
+        return f"`{col_name}`"
+
     try:
-        df[new_col_name] = df.eval(formula)
-    except Exception:
-        try:
-            # 严格正则匹配被 [ ] 包裹的变量名
-            def replace_func(match):
-                col_name = match.group(1).strip()
-                if col_name not in df.columns:
-                    raise ValueError(f"数据表中不存在列: 【{col_name}】")
-                # 转义为 Pandas Eval 能安全识别的格式
-                return f"`{col_name}`"
-
-            # 将 "[销售额] * [提成]" 转换为 "`销售额` * `提成`"
-            safe_formula = re.sub(r"\[([^\]]+)\]", replace_func, formula)
-            df[new_col_name] = df.eval(safe_formula)
-
-        except ValueError as ve:
-            # 捕获列名不存在异常
-            raise ve
-        except Exception as e:
-            raise ValueError(
-                f"公式解析失败！请检查：\n1. 公式务必使用中括号包裹列名，如：[销售额] * 0.1\n2. 四则运算符号(+-*/)需为英文输入法下打出。\n内部报错: {str(e)}"
+        safe_formula = re.sub(r"\[([^\]]+)\]", replace_func, formula)
+        if safe_formula == formula:
+            raise SyntaxError(
+                "公式中未检测到任何 [列名] 格式的列引用，请用中括号包裹列名，如：[销售额]*0.1"
             )
+        df[new_col_name] = df.eval(safe_formula)
+    except KeyError as ke:
+        raise ke
+    except SyntaxError as se:
+        raise se
+    except Exception as e:
+        raise ValueError(
+            f"公式计算失败：【{formula}】\n"
+            f"可能原因：1) 列名未用[]包裹  2) 运算符非英文输入法  3) 语法错误\n"
+            f"内部报错: {str(e)}"
+        )
 
     return df
 

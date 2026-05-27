@@ -128,6 +128,8 @@ class BaseToolPanel(QWidget):
         outer_layout.setSpacing(0)
 
         self.setStyleSheet("""
+            QComboBox { min-width: 80px; }
+            QLineEdit { min-width: 70px; }
             QComboBox QAbstractItemView {
                 background-color: white; color: #333333;
                 selection-background-color: #E0E0E0; selection-color: black;
@@ -151,9 +153,7 @@ class BaseToolPanel(QWidget):
 
         if self.use_type:
             self.type_combo = QComboBox()
-            self.type_combo.addItems(
-                ["col_name (列名)", "col_word (字母)", "col_index (索引)"]
-            )
+            self.type_combo.addItems(["列名", "字母", "索引"])
             self.top_form.addRow("匹配模式:", self.type_combo)
 
         self.main_layout.addLayout(self.top_form)
@@ -190,7 +190,10 @@ class BaseToolPanel(QWidget):
         if self.use_df and "df_name" in p:
             self.df_combo.setCurrentText(p["df_name"])
         if self.use_type:
-            self._set_combo_by_prefix(self.type_combo, p.get("col_type"))
+            _type_map = {"col_name": "列名", "col_word": "字母", "col_index": "索引"}
+            ct = p.get("col_type", "")
+            if ct in _type_map:
+                self.type_combo.setCurrentText(_type_map[ct])
         if self.use_out and "out_name" in p:
             self.out_input.setText(p["out_name"])
         self.set_custom_params(p)
@@ -200,7 +203,8 @@ class BaseToolPanel(QWidget):
         if self.use_df:
             p["df_name"] = self.df_combo.currentText()
         if self.use_type:
-            p["col_type"] = self.type_combo.currentText().split(" ")[0]
+            _type_map = {"列名": "col_name", "字母": "col_word", "索引": "col_index"}
+            p["col_type"] = _type_map.get(self.type_combo.currentText(), "col_name")
         if self.use_out:
             p["out_name"] = self.out_input.text().strip()
         p.update(self.get_custom_params())
@@ -224,6 +228,44 @@ class BaseToolPanel(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
+    def _make_col_combo(self, placeholder="选择列"):
+        """创建可编辑的列名下拉框"""
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setPlaceholderText(placeholder)
+        combo.setMinimumWidth(120)
+        combo.setStyleSheet("""
+            QComboBox { background: white; border: 1px solid #ccc; border-radius: 3px; padding: 2px 4px; }
+            QComboBox QAbstractItemView { background: white; color: #333; }
+        """)
+        if not hasattr(self, "_col_combos"):
+            self._col_combos = []
+        self._col_combos.append(combo)
+        self._refresh_col_combos()
+        return combo
+
+    def _refresh_col_combos(self):
+        """根据当前选中的 DataFrame 刷新所有列名下拉框"""
+        if not hasattr(self, "_col_combos"):
+            return
+        df_name = self.df_combo.currentText() if self.use_df else ""
+        cols = []
+        if df_name and df_name in self.data_pool:
+            cols = list(self.data_pool[df_name].columns)
+        valid_combos = []
+        for combo in self._col_combos:
+            try:
+                cur = combo.currentText()
+            except RuntimeError:
+                continue
+            valid_combos.append(combo)
+            combo.clear()
+            if cols:
+                combo.addItems(cols)
+            if cur and cur in cols:
+                combo.setCurrentText(cur)
+        self._col_combos = valid_combos
+
     def update_combos(self, table_names):
         for combo in self.combo_boxes_to_update:
             current = combo.currentText()
@@ -233,6 +275,7 @@ class BaseToolPanel(QWidget):
                 combo.setCurrentText(current)
             elif combo.count() > 0:
                 combo.setCurrentIndex(0)
+        self._refresh_col_combos()
 
     def init_custom_ui(self):
         pass
@@ -385,16 +428,16 @@ class ExtractPanel(BaseToolPanel):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("要提取的列")
+        col_combo = self._make_col_combo("选择列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
-        r_input.setPlaceholderText("重命名为(可选)")
+        r_input.setPlaceholderText("重命名(可选)")
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(c_input)
+        l.addWidget(col_combo)
         l.addWidget(r_input)
         l.addWidget(btn_rm)
         self.rules_layout.addWidget(row)
@@ -414,7 +457,7 @@ class ExtractPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c = w.findChild(QLineEdit, "col").text().strip()
+                c = w.findChild(QComboBox, "col").currentText().strip()
                 r = w.findChild(QLineEdit, "rename").text().strip()
                 if c:
                     clist.append(c)
@@ -454,6 +497,15 @@ class FilterPanel(BaseToolPanel):
     theme_color = "#E91E63"
     action_name = "筛选"
 
+    OP_MAP = {
+        "大于": ">", "小于": "<", "大于等于": ">=", "小于等于": "<=",
+        "等于": "==", "不等于": "!=",
+        "包含": "contains", "不包含": "not_contains",
+        "开头是": "startswith", "结尾是": "endswith",
+        "为空": "isnull", "不为空": "notnull",
+    }
+    OP_REV = {v: k for k, v in OP_MAP.items()}
+
     def init_custom_ui(self):
         self.logic_combo = QComboBox()
         self.logic_combo.addItems(["AND (满足所有)", "OR (满足其一)"])
@@ -476,39 +528,27 @@ class FilterPanel(BaseToolPanel):
         self.clear_dynamic_layout(self.rules_layout)
         self.add_rule()
 
-    def add_rule(self, col="", op="==", val=""):
+    def add_rule(self, col="", op="等于", val=""):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("排查列")
+        col_combo = self._make_col_combo("排查列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         op_combo = QComboBox()
         op_combo.setObjectName("op")
-        op_combo.addItems(
-            [
-                ">",
-                "<",
-                ">=",
-                "<=",
-                "==",
-                "!=",
-                "contains",
-                "not_contains",
-                "startswith",
-                "endswith",
-                "isnull",
-                "notnull",
-            ]
-        )
-        op_combo.setCurrentText(op)
+        op_combo.addItems(list(self.OP_MAP.keys()))
+        if op in self.OP_MAP:
+            op_combo.setCurrentText(op)
+        elif op in self.OP_REV:
+            op_combo.setCurrentText(self.OP_REV[op])
         v_input = QLineEdit(str(val))
         v_input.setObjectName("val")
         v_input.setPlaceholderText("目标值")
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(c_input)
+        l.addWidget(col_combo)
         l.addWidget(op_combo)
         l.addWidget(v_input)
         l.addWidget(btn_rm)
@@ -527,11 +567,10 @@ class FilterPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c, op, v = (
-                    w.findChild(QLineEdit, "col").text().strip(),
-                    w.findChild(QComboBox, "op").currentText(),
-                    w.findChild(QLineEdit, "val").text().strip(),
-                )
+                c = w.findChild(QComboBox, "col").currentText().strip()
+                op_cn = w.findChild(QComboBox, "op").currentText()
+                op = self.OP_MAP.get(op_cn, "==")
+                v = w.findChild(QLineEdit, "val").text().strip()
                 if c:
                     conds.append({"col": c, "op": op, "value": v})
         return {
@@ -558,9 +597,15 @@ class GroupPanel(BaseToolPanel):
     action_name = "汇总"
 
     def init_custom_ui(self):
-        self.group_keys = QLineEdit()
-        self.group_keys.setPlaceholderText("例: 部门, 岗位 / A, B")
-        self.top_form.addRow("分组依据列:", self.group_keys)
+        self.custom_layout.addWidget(QLabel("分组依据列:"))
+        self.group_keys_layout = QVBoxLayout()
+        self.group_keys_layout.setSpacing(4)
+        self.custom_layout.addLayout(self.group_keys_layout)
+        self.add_group_key_row()
+        btn_add_key = QPushButton("+ 添加分组列")
+        btn_add_key.setStyleSheet("background-color: #EEEEEE; padding: 5px;")
+        btn_add_key.clicked.connect(lambda: self.add_group_key_row())
+        self.custom_layout.addWidget(btn_add_key)
         self.custom_layout.addWidget(QLabel("聚合统计规则:"))
         self.rules_layout = QVBoxLayout()
         self.rules_layout.setSpacing(4)
@@ -575,17 +620,32 @@ class GroupPanel(BaseToolPanel):
         self.custom_layout.addWidget(hint)
 
     def clear_custom_ui(self):
-        self.group_keys.clear()
+        self.clear_dynamic_layout(self.group_keys_layout)
+        self.add_group_key_row()
         self.clear_dynamic_layout(self.rules_layout)
         self.add_rule_row()
+
+    def add_group_key_row(self, col=""):
+        row = QWidget()
+        l = QHBoxLayout(row)
+        l.setContentsMargins(0, 0, 0, 0)
+        col_combo = self._make_col_combo("分组列")
+        col_combo.setObjectName("group_col")
+        col_combo.setCurrentText(str(col))
+        btn_rm = QPushButton("×")
+        btn_rm.setFixedWidth(25)
+        btn_rm.clicked.connect(row.deleteLater)
+        l.addWidget(col_combo)
+        l.addWidget(btn_rm)
+        self.group_keys_layout.addWidget(row)
 
     def add_rule_row(self, col="", func="sum", rename=""):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("运算列")
+        col_combo = self._make_col_combo("运算列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         f_combo = QComboBox()
         f_combo.setObjectName("func")
         f_combo.addItems(["sum", "mean", "max", "min", "count", "first"])
@@ -596,15 +656,18 @@ class GroupPanel(BaseToolPanel):
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(c_input)
+        l.addWidget(col_combo)
         l.addWidget(f_combo)
         l.addWidget(r_input)
         l.addWidget(btn_rm)
         self.rules_layout.addWidget(row)
 
     def set_custom_params(self, p):
-        if "group_key" in p:
-            self.group_keys.setText(",".join(p["group_key"]))
+        g_keys = p.get("group_key", [])
+        if g_keys:
+            self.clear_dynamic_layout(self.group_keys_layout)
+            for k in g_keys:
+                self.add_group_key_row(k)
         rules = p.get("agg_rules", [])
         if rules:
             self.clear_dynamic_layout(self.rules_layout)
@@ -612,16 +675,22 @@ class GroupPanel(BaseToolPanel):
                 self.add_rule_row(r.get("col"), r.get("func"), r.get("rename"))
 
     def get_custom_params(self):
-        g_keys = [k.strip() for k in self.group_keys.text().split(",") if k.strip()]
+        g_keys = []
+        for i in range(self.group_keys_layout.count()):
+            w = self.group_keys_layout.itemAt(i).widget()
+            if w:
+                combo = w.findChild(QComboBox, "group_col")
+                if combo:
+                    c = combo.currentText().strip()
+                    if c:
+                        g_keys.append(c)
         rules = []
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c, f, r = (
-                    w.findChild(QLineEdit, "col").text().strip(),
-                    w.findChild(QComboBox, "func").currentText(),
-                    w.findChild(QLineEdit, "rename").text().strip(),
-                )
+                c = w.findChild(QComboBox, "col").currentText().strip()
+                f = w.findChild(QComboBox, "func").currentText()
+                r = w.findChild(QLineEdit, "rename").text().strip()
                 if c:
                     rules.append({"col": c, "func": f, "rename": r})
         return {"group_key": g_keys, "agg_rules": rules}
@@ -666,6 +735,28 @@ class JoinPanel(BaseToolPanel):
     theme_color = "#4CAF50"
     action_name = "连接"
 
+    def _refresh_col_combos(self):
+        """JoinPanel 使用右表(df2_combo)的列名"""
+        if not hasattr(self, "_col_combos"):
+            return
+        df_name = self.df2_combo.currentText() if hasattr(self, "df2_combo") else ""
+        cols = []
+        if df_name and df_name in self.data_pool:
+            cols = list(self.data_pool[df_name].columns)
+        valid_combos = []
+        for combo in self._col_combos:
+            try:
+                cur = combo.currentText()
+            except RuntimeError:
+                continue
+            valid_combos.append(combo)
+            combo.clear()
+            if cols:
+                combo.addItems(cols)
+            if cur and cur in cols:
+                combo.setCurrentText(cur)
+        self._col_combos = valid_combos
+
     def init_custom_ui(self):
         self.df1_combo = QComboBox()
         self.df2_combo = QComboBox()
@@ -699,16 +790,16 @@ class JoinPanel(BaseToolPanel):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("右表列")
+        col_combo = self._make_col_combo("右表列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("重命名(可选)")
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(c_input)
+        l.addWidget(col_combo)
         l.addWidget(r_input)
         l.addWidget(btn_rm)
         self.rules_layout.addWidget(row)
@@ -734,10 +825,8 @@ class JoinPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c, r = (
-                    w.findChild(QLineEdit, "col").text().strip(),
-                    w.findChild(QLineEdit, "rename").text().strip(),
-                )
+                c = w.findChild(QComboBox, "col").currentText().strip()
+                r = w.findChild(QLineEdit, "rename").text().strip()
                 if c:
                     get_cols.append(c)
                     col_names.append(r)
@@ -813,9 +902,9 @@ class RankPanel(BaseToolPanel):
         v_layout.setSpacing(4)
         h1 = QHBoxLayout()
         h1.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("要排名的列")
+        col_combo = self._make_col_combo("排序列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("新列名 (必填)")
@@ -823,7 +912,7 @@ class RankPanel(BaseToolPanel):
         btn_rm.setFixedWidth(25)
         btn_rm.setStyleSheet("border:none; color: red;")
         btn_rm.clicked.connect(container.deleteLater)
-        h1.addWidget(c_input)
+        h1.addWidget(col_combo)
         h1.addWidget(QLabel("->"))
         h1.addWidget(r_input)
         h1.addWidget(btn_rm)
@@ -870,10 +959,9 @@ class RankPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c, r = (
-                    w.findChild(QLineEdit, "col").text().strip(),
-                    w.findChild(QLineEdit, "rename").text().strip(),
-                )
+                col_combo = w.findChild(QComboBox, "col")
+                c = col_combo.currentText().strip() if col_combo else ""
+                r = w.findChild(QLineEdit, "rename").text().strip()
                 m, asc = (
                     w.findChild(QComboBox, "method").currentText(),
                     w.findChild(QComboBox, "asc").currentIndex() == 0,
@@ -935,16 +1023,16 @@ class SortPanel(BaseToolPanel):
         v.setContentsMargins(0, 0, 0, 8)
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("排序列")
+        col_combo = self._make_col_combo("排序列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         asc_combo = QComboBox()
         asc_combo.setObjectName("asc")
         asc_combo.addItems(["升序", "降序", "自定义"])
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(container.deleteLater)
-        h.addWidget(c_input)
+        h.addWidget(col_combo)
         h.addWidget(asc_combo)
         h.addWidget(btn_rm)
         cus_input = QLineEdit(",".join(custom_order))
@@ -980,7 +1068,8 @@ class SortPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c = w.findChild(QLineEdit, "col").text().strip()
+                col_combo = w.findChild(QComboBox, "col")
+                c = col_combo.currentText().strip() if col_combo else ""
                 asc_idx = w.findChild(QComboBox, "asc").currentIndex()
                 cus_str = w.findChild(QLineEdit, "custom").text().strip()
                 if c:
@@ -1120,9 +1209,9 @@ class CleanPanel(BaseToolPanel):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        c_input = QLineEdit(str(col))
-        c_input.setObjectName("col")
-        c_input.setPlaceholderText("清洗列")
+        col_combo = self._make_col_combo("清洗列")
+        col_combo.setObjectName("col")
+        col_combo.setCurrentText(str(col))
         action_combo = QComboBox()
         action_combo.setObjectName("action")
         action_combo.addItems(
@@ -1139,7 +1228,7 @@ class CleanPanel(BaseToolPanel):
         btn_rm = QPushButton("×")
         btn_rm.setFixedWidth(25)
         btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(c_input)
+        l.addWidget(col_combo)
         l.addWidget(action_combo)
         l.addWidget(f_input)
         l.addWidget(btn_rm)
@@ -1157,7 +1246,8 @@ class CleanPanel(BaseToolPanel):
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                c = w.findChild(QLineEdit, "col").text().strip()
+                col_combo = w.findChild(QComboBox, "col")
+                c = col_combo.currentText().strip() if col_combo else ""
                 a = w.findChild(QComboBox, "action").currentText()
                 f = w.findChild(QLineEdit, "fill").text().strip()
                 if c:

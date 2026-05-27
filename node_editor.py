@@ -5,7 +5,7 @@ from PyQt5.QtWidgets import (
     QGraphicsPathItem,
     QMessageBox,
 )
-from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal, QLineF
+from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import (
     QColor,
     QPen,
@@ -13,10 +13,11 @@ from PyQt5.QtGui import (
     QFont,
     QPainterPath,
     QPainter,
-    QPolygonF,
     QPainterPathStroker,
     QFontMetrics,
 )
+
+import utils
 
 
 class NodeItem(QGraphicsItem):
@@ -149,17 +150,7 @@ class EdgeItem(QGraphicsPathItem):
         )
         ep = self.dest_node.pos() + QPointF(0, self.dest_node.height / 2)
 
-        path = QPainterPath()
-        path.moveTo(sp)
-
-        # 控制曲线最大张力
-        dist = min(max(abs(ep.x() - sp.x()) * 0.4, 60), 200)
-
-        ctrl1 = QPointF(sp.x() + dist, sp.y())
-        ctrl2 = QPointF(ep.x() - dist, ep.y())
-        path.cubicTo(ctrl1, ctrl2, ep)
-
-        self.setPath(path)
+        self.setPath(utils.bezier_edge_path(sp, ep))
 
     def paint(self, painter, option, widget):
         painter.setRenderHint(QPainter.Antialiasing)
@@ -180,15 +171,7 @@ class EdgeItem(QGraphicsPathItem):
             ep = self.dest_node.pos() + QPointF(0, self.dest_node.height / 2)
             painter.setBrush(QBrush(line_color))
             painter.setPen(Qt.NoPen)
-            arrow_size = 10
-            polygon = QPolygonF(
-                [
-                    ep,
-                    ep + QPointF(-arrow_size, -arrow_size / 2),
-                    ep + QPointF(-arrow_size, arrow_size / 2),
-                ]
-            )
-            painter.drawPolygon(polygon)
+            painter.drawPolygon(utils.arrow_polygon(ep))
 
 
 class NodeCanvasScene(QGraphicsScene):
@@ -204,25 +187,7 @@ class NodeCanvasScene(QGraphicsScene):
         self.start_node = None
 
     def drawBackground(self, painter, rect):
-        painter.fillRect(rect, QColor("#f0f2f5"))
-
-        grid_size = 20
-        left = int(rect.left()) - (int(rect.left()) % grid_size)
-        top = int(rect.top()) - (int(rect.top()) % grid_size)
-
-        lines = []
-        x = left
-        while x < rect.right():
-            lines.append(QLineF(x, rect.top(), x, rect.bottom()))
-            x += grid_size
-        y = top
-        while y < rect.bottom():
-            lines.append(QLineF(rect.left(), y, rect.right(), y))
-            y += grid_size
-
-        pen = QPen(QColor("#e0e4e8"), 1)
-        painter.setPen(pen)
-        painter.drawLines(lines)
+        utils.draw_grid_background(painter, rect)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.RightButton:
@@ -259,16 +224,7 @@ class NodeCanvasScene(QGraphicsScene):
                 self.start_node.width, self.start_node.height / 2
             )
             ep = event.scenePos()
-
-            path = QPainterPath()
-            path.moveTo(sp)
-
-            dist = max(abs(ep.x() - sp.x()) * 0.5, 40)
-            ctrl1 = QPointF(sp.x() + dist, sp.y())
-            ctrl2 = QPointF(ep.x() - dist, ep.y())
-            path.cubicTo(ctrl1, ctrl2, ep)
-
-            self.temp_edge.setPath(path)
+            self.temp_edge.setPath(utils.bezier_edge_path(sp, ep))
         else:
             super().mouseMoveEvent(event)
 

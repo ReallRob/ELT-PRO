@@ -27,6 +27,7 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QMenu,
     QScrollArea,
+    QApplication,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QPointF
 from PyQt5.QtGui import QFont, QCursor
@@ -34,6 +35,7 @@ from PyQt5.QtGui import QFont, QCursor
 from workspace_context import WorkspaceContext
 from ui_components import PandasModel, NODE_REGISTRY
 from node_editor import NodeCanvasScene, NodeCanvasView, NodeItem, EdgeItem
+import utils
 
 
 class PathRemapDialog(QDialog):
@@ -96,40 +98,42 @@ class ToolboxWidget(QGroupBox):
 
     def __init__(self):
         super().__init__()
+        self.setTitle("节点工具箱")
         self.setStyleSheet(
-            "QGroupBox { border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; }"
+            "QGroupBox { border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; font-weight: bold; padding-top: 20px; }"
         )
-        self.setFixedHeight(95)
+        self.setMinimumWidth(140)
+        self.setMaximumWidth(200)
         self.init_ui()
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setContentsMargins(4, 4, 4, 4)
+        main_layout.setSpacing(4)
 
-        # 修复显示不全：增加横向滚动条，窗口变窄时工具按钮不会消失
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QFrame.NoFrame)
-        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         scroll_area.setStyleSheet("QScrollArea { background-color: transparent; }")
 
         content_widget = QWidget()
-        layout = QHBoxLayout(content_widget)
-        layout.setContentsMargins(10, 5, 10, 5)
-        layout.setSpacing(8)
-
-        tools_label = QLabel("节点工具箱:")
-        tools_label.setFont(QFont("Microsoft YaHei", 10, QFont.Bold))
-        layout.addWidget(tools_label)
+        layout = QVBoxLayout(content_widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
 
         for action, config in NODE_REGISTRY.items():
-            btn = QPushButton(config["title"])
-            btn.setFixedHeight(35)
-            btn.setMinimumWidth(100)
+            btn = QPushButton(f"  {config['title']}")
+            btn.setFixedHeight(34)
+            btn.setMinimumWidth(120)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setStyleSheet(f"""
-                QPushButton {{ background-color: white; border: 1px solid #ccc; border-radius: 4px; border-bottom: 3px solid {config['color']}; }}
+                QPushButton {{
+                    background-color: white; border: 1px solid #ddd; border-radius: 4px;
+                    border-left: 4px solid {config['color']}; text-align: left; padding-left: 4px;
+                    font-size: 12px;
+                }}
                 QPushButton:hover {{ background-color: {config['color']}; color: white; }}
             """)
             btn.clicked.connect(
@@ -161,27 +165,18 @@ class DesignModeWidget(QWidget):
 
     def init_ui(self):
         main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(10, 5, 10, 10)
-        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(6, 4, 6, 4)
+        main_layout.setSpacing(4)
 
-        self.toolbox = ToolboxWidget()
-        self.toolbox.add_node_requested.connect(self.add_node_to_canvas)
-        main_layout.addWidget(self.toolbox)
-
-        self.main_splitter = QSplitter(Qt.Horizontal)
-
-        canvas_container = QWidget()
-        canvas_layout = QVBoxLayout(canvas_container)
-        canvas_layout.setContentsMargins(0, 0, 0, 0)
-
-        canvas_header = QHBoxLayout()
-        canvas_header.setSpacing(10)
+        # === Top Toolbar ===
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
 
         btn_import = QPushButton("导入模板")
         btn_export = QPushButton("导出模板")
         btn_clear = QPushButton("清空画布")
         io_btn_style = """
-            QPushButton { background-color: white; border: 1px solid #ccc; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
+            QPushButton { background-color: white; border: 1px solid #ccc; padding: 5px 12px; border-radius: 4px; font-size: 12px; }
             QPushButton:hover { background-color: #f0f0f0; border-color: #999; }
         """
         for b in [btn_import, btn_export, btn_clear]:
@@ -200,107 +195,117 @@ class DesignModeWidget(QWidget):
 
         self.btn_run_all = QPushButton("全量跑批执行")
         self.btn_run_all.setStyleSheet(
-            "background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; padding: 4px 15px;"
+            "background-color: #4CAF50; color: white; font-weight: bold; border-radius: 4px; padding: 5px 15px;"
         )
         self.btn_run_all.clicked.connect(self.run_full_workflow)
 
         self.btn_auto_layout = QPushButton("整理排版")
         self.btn_auto_layout.setStyleSheet(
-            "background-color: #009688; color: white; font-weight: bold; border-radius: 4px; padding: 4px 15px;"
+            "background-color: #009688; color: white; font-weight: bold; border-radius: 4px; padding: 5px 15px;"
         )
         self.btn_auto_layout.clicked.connect(self.auto_layout_nodes)
 
-        self.btn_delete_node = QPushButton("- 删除选中")
+        self.btn_delete_node = QPushButton("删除选中")
         self.btn_delete_node.setStyleSheet(
-            "background-color: #f44336; color: white; font-weight: bold; border-radius: 4px; padding: 4px 10px;"
+            "background-color: #f44336; color: white; font-weight: bold; border-radius: 4px; padding: 5px 12px;"
         )
         self.btn_delete_node.clicked.connect(self.delete_canvas_node)
 
-        canvas_header.addWidget(btn_import)
-        canvas_header.addWidget(btn_export)
-        canvas_header.addWidget(btn_clear)
-        canvas_header.addWidget(create_sep())
-        canvas_header.addWidget(self.btn_run_all)
-        canvas_header.addWidget(self.btn_auto_layout)
-        canvas_header.addWidget(create_sep())
-        canvas_header.addStretch(1)
-        canvas_header.addWidget(self.btn_delete_node)
+        toolbar.addWidget(btn_import)
+        toolbar.addWidget(btn_export)
+        toolbar.addWidget(btn_clear)
+        toolbar.addWidget(create_sep())
+        toolbar.addWidget(self.btn_run_all)
+        toolbar.addWidget(self.btn_auto_layout)
+        toolbar.addWidget(create_sep())
+        toolbar.addStretch(1)
+        toolbar.addWidget(self.btn_delete_node)
+        main_layout.addLayout(toolbar)
+
+        # === Main Splitter: Toolbox | Canvas | Right Panel ===
+        self.main_splitter = QSplitter(Qt.Horizontal)
+
+        # Left: Toolbox
+        self.toolbox = ToolboxWidget()
+        self.toolbox.add_node_requested.connect(self.add_node_to_canvas)
+
+        # Center: Canvas
+        canvas_container = QWidget()
+        canvas_layout = QVBoxLayout(canvas_container)
+        canvas_layout.setContentsMargins(0, 0, 0, 0)
+        canvas_layout.setSpacing(0)
 
         self.canvas_scene = NodeCanvasScene()
         self.canvas_scene.node_selected.connect(self.on_canvas_node_selected)
-        self.canvas_scene.node_double_clicked.connect(
-            self.on_canvas_node_double_clicked
-        )
-
-        # 订阅右键菜单信号
+        self.canvas_scene.node_double_clicked.connect(self.on_canvas_node_double_clicked)
         self.canvas_scene.right_clicked.connect(self.show_context_menu)
 
         self.canvas_view = NodeCanvasView(self.canvas_scene)
-
-        canvas_layout.addLayout(canvas_header)
         canvas_layout.addWidget(self.canvas_view)
 
-        preview_container = QWidget()
-        preview_layout = QVBoxLayout(preview_container)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
+        # Right: Data Preview only
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(4)
 
         preview_header = QHBoxLayout()
-
-        self.chk_auto_follow = QCheckBox("自动跟随点击")
+        self.chk_auto_follow = QCheckBox("自动跟随")
         self.chk_auto_follow.setChecked(True)
         self.chk_auto_follow.setStyleSheet("font-weight: bold; color: #2196F3;")
         self.chk_auto_follow.stateChanged.connect(self._on_auto_follow_changed)
 
-        lbl_quick = QLabel("  快速看表:")
         self.combo_preview_tables = QComboBox()
-        self.combo_preview_tables.setMinimumWidth(160)
+        self.combo_preview_tables.setMinimumWidth(120)
         self.combo_preview_tables.addItem("暂无数据")
-
         self.combo_preview_tables.setStyleSheet("""
-            QComboBox { background: white; border: 1px solid #ccc; border-radius: 3px; padding: 3px 5px; color: black; }
-            QComboBox::drop-down { border-left: 1px solid #ccc; }
-            QComboBox QAbstractItemView { background-color: white; color: black; selection-background-color: #E1F5FE; selection-color: black; }
+            QComboBox { background: white; border: 1px solid #ccc; border-radius: 3px; padding: 2px 5px; color: black; }
+            QComboBox QAbstractItemView { background-color: white; color: black; selection-background-color: #E1F5FE; }
         """)
-        self.combo_preview_tables.currentIndexChanged.connect(
-            self._on_manual_combo_changed
-        )
+        self.combo_preview_tables.currentIndexChanged.connect(self._on_manual_combo_changed)
 
-        self.preview_title = QLabel("数据预览: 未选择节点")
-        self.preview_title.setFont(QFont("Arial", 10, QFont.Bold))
+        self.preview_title = QLabel("未选择")
+        self.preview_title.setStyleSheet("color: #888;")
 
-        self.lbl_shape = QLabel("(0 行, 0 列)")
-
+        self.lbl_shape = QLabel("")
         preview_header.addWidget(self.chk_auto_follow)
-        preview_header.addWidget(lbl_quick)
         preview_header.addWidget(self.combo_preview_tables)
-        preview_header.addSpacing(20)
-        preview_header.addWidget(self.preview_title)
-        preview_header.addStretch(1)
-        preview_header.addWidget(self.lbl_shape, alignment=Qt.AlignRight)
+        preview_header.addWidget(self.preview_title, stretch=1)
+        preview_header.addWidget(self.lbl_shape)
 
         self.preview_tabs = QTabWidget()
         self.preview_tabs.setStyleSheet("""
-            QTabWidget::pane { border: 1px solid #ddd; background: white; }
-            QTabBar::tab { background: #f0f0f0; border: 1px solid #ccc; padding: 6px 15px; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; font-weight: bold;}
+            QTabWidget::pane { border: 1px solid #eee; background: white; }
+            QTabBar::tab { background: #f5f5f5; border: 1px solid #ddd; padding: 4px 10px;
+                border-top-left-radius: 3px; border-top-right-radius: 3px; margin-right: 1px; font-size: 11px; }
             QTabBar::tab:selected { background: #E1F5FE; color: #0277BD; border-bottom: none; }
         """)
         self.preview_tabs.currentChanged.connect(self._on_tab_changed)
 
-        preview_layout.addLayout(preview_header)
-        preview_layout.addWidget(self.preview_tabs)
+        right_layout.addLayout(preview_header)
+        right_layout.addWidget(self.preview_tabs)
 
+        # Assemble splitter
+        self.main_splitter.addWidget(self.toolbox)
         self.main_splitter.addWidget(canvas_container)
-        self.main_splitter.addWidget(preview_container)
-        self.main_splitter.setSizes([750, 550])
-        main_layout.addWidget(self.main_splitter)
+        self.main_splitter.addWidget(right_panel)
+        self.main_splitter.setSizes([160, 700, 420])
+        main_layout.addWidget(self.main_splitter, stretch=1)
 
+        # === Config Dialog (card-style popup) ===
         self.config_dialog = QDialog(self)
-        self.config_dialog.setWindowFlags(Qt.Dialog)
-        self.config_dialog.setMinimumSize(450, 550)
-        self.config_dialog.setWindowTitle("属性配置")
+        self.config_dialog.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
+        self.config_dialog.setWindowTitle("算子配置")
+        self.config_dialog.setMinimumWidth(520)
+        self.config_dialog.resize(560, 520)
+        self.config_dialog.setStyleSheet("""
+            QDialog { background: #fafafa; border: 1px solid #ccc; border-radius: 8px; }
+        """)
+        self.config_dialog.setAttribute(Qt.WA_TranslucentBackground, False)
 
-        self.config_dialog.finished.connect(lambda: self.save_current_node_draft())
         dialog_layout = QVBoxLayout(self.config_dialog)
+        dialog_layout.setContentsMargins(0, 0, 0, 0)
+        dialog_layout.setSpacing(0)
 
         self.config_area = QStackedWidget()
         self.panel_instances = {}
@@ -313,7 +318,7 @@ class DesignModeWidget(QWidget):
 
         self.panel_empty = QWidget()
         empty_layout = QVBoxLayout(self.panel_empty)
-        empty_lbl = QLabel("请在画布中选中一个节点进行配置")
+        empty_lbl = QLabel("在画布中单击或双击节点\n进行参数配置")
         empty_lbl.setAlignment(Qt.AlignCenter)
         empty_lbl.setStyleSheet("color: #888; font-size: 13px;")
         empty_layout.addWidget(empty_lbl)
@@ -321,6 +326,21 @@ class DesignModeWidget(QWidget):
         self.panel_instances["sys_empty"] = self.panel_empty
 
         dialog_layout.addWidget(self.config_area)
+
+        # === Bottom Status Bar ===
+        status_bar = QHBoxLayout()
+        status_bar.setSpacing(15)
+        self.status_label = QLabel("就绪")
+        self.status_label.setStyleSheet("color: #666; font-size: 11px; padding: 2px 8px;")
+        self.status_node_count = QLabel("节点: 0")
+        self.status_node_count.setStyleSheet("color: #999; font-size: 11px;")
+        self.status_table_count = QLabel("内存表: 0")
+        self.status_table_count.setStyleSheet("color: #999; font-size: 11px;")
+        status_bar.addWidget(self.status_label)
+        status_bar.addStretch(1)
+        status_bar.addWidget(self.status_node_count)
+        status_bar.addWidget(self.status_table_count)
+        main_layout.addLayout(status_bar)
 
     def show_context_menu(self, scene_pos):
         menu = QMenu(self)
@@ -357,6 +377,7 @@ class DesignModeWidget(QWidget):
         node.setSelected(True)
 
         self.on_canvas_node_selected(node)
+        self._update_status_bar()
         if action == "load_file":
             self.on_canvas_node_double_clicked(node)
 
@@ -489,7 +510,7 @@ class DesignModeWidget(QWidget):
             active_panel = self.panel_instances.get(action)
             if active_panel:
                 self.config_area.setCurrentWidget(active_panel)
-                self.config_dialog.setWindowTitle(f"配置算子: {node.title}")
+                self.config_dialog.setWindowTitle(f"配置: {node.title}")
                 incoming = [
                     e.source_node.params.get("out_name") or e.source_node.title
                     for e in node.edges_in
@@ -497,9 +518,22 @@ class DesignModeWidget(QWidget):
                 active_panel.clear_ui()
                 active_panel.update_combos(incoming)
                 active_panel.set_params(node.params)
+                active_panel._refresh_col_combos()
         else:
             self.config_area.setCurrentWidget(self.panel_instances["sys_empty"])
-            self.config_dialog.setWindowTitle("配置算子: (未选择)")
+            self.config_dialog.setWindowTitle("算子配置")
+
+    def _update_status_bar(self):
+        nodes = [item for item in self.canvas_scene.items() if isinstance(item, NodeItem)]
+        edges = [item for item in self.canvas_scene.items() if isinstance(item, EdgeItem)]
+        node_count = len(nodes)
+        edge_count = len(edges)
+        table_count = len(self.ctx.data_pool)
+        self.status_node_count.setText(f"节点: {node_count}  连线: {edge_count}")
+        self.status_table_count.setText(f"内存表: {table_count}")
+        self.status_label.setText(
+            "点击节点查看数据 | 双击配置参数 | 右键添加节点"
+        )
 
     def save_current_node_draft(self):
         if self.current_selected_node and "action" in self.current_selected_node.params:
@@ -540,6 +574,7 @@ class DesignModeWidget(QWidget):
 
         self.on_canvas_node_selected(self.current_selected_node)
         self.config_dialog.hide()
+        self._update_status_bar()
 
     def clear_canvas_logic(self):
         nodes = [
@@ -562,17 +597,17 @@ class DesignModeWidget(QWidget):
 
             self.preview_tabs.clear()
             self._current_tab_shapes.clear()
-            self.preview_title.setText(
-                "数据预览: 未选择节点\n(提示: 双击画布节点可配置参数)"
-            )
-            self.preview_title.setStyleSheet("color: black; font-weight: bold;")
-            self.lbl_shape.setText("(0 行, 0 列)")
+            self.preview_title.setText("未选择")
+            self.preview_title.setStyleSheet("color: #888;")
+            self.lbl_shape.setText("")
             self.current_selected_node = None
-            if self.config_dialog.isVisible():
-                self.config_dialog.hide()
+            self.config_area.setCurrentWidget(self.panel_instances["sys_empty"])
+            self.config_dialog.hide()
+            self._update_status_bar()
 
     def delete_canvas_node(self):
         self.canvas_scene.delete_selected_items()
+        self._update_status_bar()
 
     def add_node_to_canvas(self, action):
         view_center = self.canvas_view.viewport().rect().center()
@@ -594,6 +629,7 @@ class DesignModeWidget(QWidget):
             QMessageBox.warning(self, "警告", "存在死循环连线，无法处理。")
             return
 
+        total_steps = len(config["steps"])
         for step in config["steps"]:
             node_id = step["node_id"]
             node = next((n for n in nodes if n.node_id == node_id), None)
@@ -605,12 +641,18 @@ class DesignModeWidget(QWidget):
                     node.title = assigned_name
                     node.update()
 
-        self.progress = QProgressDialog("正在高速全量执行流水线...", "取消", 0, 0, self)
+        self.progress = QProgressDialog("正在高速全量执行流水线...", None, 0, total_steps, self)
+        self.progress.setWindowTitle("执行中")
+        self.progress.setWindowModality(Qt.WindowModal)
+        self.progress.setAutoClose(True)
         self.progress.show()
         self.ctx.run_full_workflow()
+        if self.ctx.engine:
+            self.ctx.engine.progress_signal.connect(self.progress.setValue)
 
     def _on_full_run_finished(self, success, result_pool):
         self.progress.close()
+        self._update_status_bar()
         if success:
             for item in self.canvas_scene.items():
                 if isinstance(item, NodeItem):
@@ -635,88 +677,12 @@ class DesignModeWidget(QWidget):
         if not nodes:
             return
 
-        undirected_adj = {n: [] for n in nodes}
-        for n in nodes:
-            for edge in n.edges_out:
-                undirected_adj[n].append(edge.dest_node)
-                undirected_adj[edge.dest_node].append(n)
-
-        visited = set()
-        components = []
-        for n in nodes:
-            if n not in visited:
-                comp = []
-                q = [n]
-                visited.add(n)
-                while q:
-                    curr = q.pop(0)
-                    comp.append(curr)
-                    for neighbor in undirected_adj[curr]:
-                        if neighbor not in visited:
-                            visited.add(neighbor)
-                            q.append(neighbor)
-                components.append(comp)
-
-        x_spacing = 320
-        y_spacing = 140
-
-        components.sort(
-            key=lambda comp: sum(n.scenePos().y() for n in comp) / len(comp)
+        utils.topological_layout(
+            nodes,
+            get_outgoing=lambda n: [e.dest_node for e in n.edges_out],
+            get_sort_key=lambda n: n.scenePos().y(),
+            set_pos_func=lambda n, x, y: n.setPos(x, y),
         )
-        current_base_y = 200
-
-        for comp_nodes in components:
-            in_degree = {n: 0 for n in comp_nodes}
-            adj_list = {n: [] for n in comp_nodes}
-            for n in comp_nodes:
-                for edge in n.edges_out:
-                    if edge.dest_node in in_degree:
-                        adj_list[n].append(edge.dest_node)
-                        in_degree[edge.dest_node] += 1
-
-            queue = [n for n in comp_nodes if in_degree[n] == 0]
-            layer_map = {n: 0 for n in queue}
-
-            while queue:
-                curr = queue.pop(0)
-                for neighbor in adj_list[curr]:
-                    layer_map[neighbor] = max(
-                        layer_map.get(neighbor, 0), layer_map[curr] + 1
-                    )
-                    in_degree[neighbor] -= 1
-                    if in_degree[neighbor] == 0:
-                        queue.append(neighbor)
-
-            layers = {}
-            for n in comp_nodes:
-                l = layer_map.get(n, 0)
-                if l not in layers:
-                    layers[l] = []
-                layers[l].append(n)
-
-            for l in layers:
-                layers[l].sort(key=lambda n: n.scenePos().y())
-
-            max_nodes_in_layer = (
-                max([len(lst) for lst in layers.values()]) if layers else 1
-            )
-            comp_height = (max_nodes_in_layer - 1) * y_spacing
-            comp_center_y = current_base_y + comp_height / 2
-
-            for l_idx in sorted(layers.keys()):
-                layer_nodes = layers[l_idx]
-                num_nodes = len(layer_nodes)
-                layer_height = (num_nodes - 1) * y_spacing
-                start_y = comp_center_y - layer_height / 2
-
-                stagger_offset = (y_spacing * 0.5) if (l_idx % 2 != 0) else 0
-
-                for i, node in enumerate(layer_nodes):
-                    x = 100 + l_idx * x_spacing
-                    y = start_y + i * y_spacing + stagger_offset
-                    node.setPos(x, y)
-
-            current_base_y += comp_height + y_spacing * 2.0
 
         for item in self.canvas_scene.items():
             if isinstance(item, EdgeItem):

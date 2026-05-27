@@ -28,6 +28,7 @@ def get_exec_dir():
 
 class WorkflowEngine(QThread):
     log_signal = pyqtSignal(str)
+    progress_signal = pyqtSignal(int, int)
     finished_signal = pyqtSignal(bool, object)
 
     def __init__(self, file_mapping, workflow_config, keep_intermediates=False):
@@ -72,6 +73,7 @@ class WorkflowEngine(QThread):
             self.log(f"开始执行工作流: {workflow_name} (共 {total_steps} 步)")
 
             for i, step in enumerate(steps):
+                self.progress_signal.emit(i + 1, total_steps)
                 step_id = step.get("step_id", i + 1)
                 node_id = step.get("node_id")
                 action = step.get("action")
@@ -189,7 +191,7 @@ class WorkflowEngine(QThread):
                         )
 
                     elif action == "rank_col":
-                        df = self._get_df(p.get("df_id")).copy()
+                        df = self._get_df(p.get("df_id"))
                         col_type = p.get("col_type", "col_name")
                         rules = p.get("rules", [])
                         for rule in rules:
@@ -210,7 +212,7 @@ class WorkflowEngine(QThread):
                         )
 
                     elif action == "calc_col":
-                        df = self._get_df(p.get("df_id")).copy()
+                        df = self._get_df(p.get("df_id"))
                         rules = p.get("rules", [])
                         for rule in rules:
                             df = calc_col(df, rule["new_col_name"], rule["formula"])
