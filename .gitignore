@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# 应用运行时生成的本地配置（含用户特定路径）
+config/workspace_config.json
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
