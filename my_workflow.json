@@ -1,0 +1,151 @@
+{
+    "workflow_name": "UI_Draft",
+    "steps": [
+        {
+            "step_id": 1,
+            "node_id": "node_ebd91efd",
+            "action": "load_file",
+            "out_name": "Sheet1",
+            "params": {
+                "file_path": "D:/Projects/工商信息.xlsx",
+                "sheet_name": "Sheet1",
+                "skiprows": 0,
+                "nrows": null,
+                "out_name": "Sheet1"
+            },
+            "x": 100.0,
+            "y": 340.0
+        },
+        {
+            "step_id": 2,
+            "node_id": "node_1237106d",
+            "action": "load_file",
+            "out_name": "Sheet1",
+            "params": {
+                "out_name": "Sheet1",
+                "file_path": "D:/Projects/工商信息.xlsx",
+                "sheet_name": "Sheet1",
+                "skiprows": 0,
+                "nrows": null
+            },
+            "x": 100.0,
+            "y": 200.0
+        },
+        {
+            "step_id": 3,
+            "node_id": "node_078b5e22",
+            "action": "get_col_data",
+            "out_name": "临时表_3",
+            "params": {
+                "df_name": "Sheet1",
+                "col_type": "col_name",
+                "col_list": [
+                    "企业名称",
+                    "法定代表人",
+                    "注册资本"
+                ],
+                "col_names": [
+                    "",
+                    "",
+                    ""
+                ],
+                "fill_value": null,
+                "out_name": "临时表_3",
+                "df_id": "node_ebd91efd"
+            },
+            "x": 420.0,
+            "y": 340.0
+        },
+        {
+            "step_id": 4,
+            "node_id": "node_a533f0d1",
+            "action": "clean_data",
+            "out_name": "Sheet1_清洗",
+            "params": {
+                "df_name": "Sheet1",
+                "col_type": "col_name",
+                "out_name": "Sheet1_清洗",
+                "rules": [
+                    {
+                        "cols": "成立日期",
+                        "action": "to_datetime",
+                        "fill_value": "%Y年%m月%d日"
+                    }
+                ],
+                "df_id": "node_ebd91efd"
+            },
+            "x": 420.0,
+            "y": 480.0
+        },
+        {
+            "step_id": 5,
+            "node_id": "node_05a9f29d",
+            "action": "get_col_data",
+            "out_name": "Sheet1_提取",
+            "params": {
+                "df_name": "Sheet1",
+                "col_type": "col_name",
+                "out_name": "Sheet1_提取",
+                "col_list": [
+                    "企业名称"
+                ],
+                "col_names": [
+                    ""
+                ],
+                "fill_value": null,
+                "df_id": "node_1237106d"
+            },
+            "x": 420.0,
+            "y": 120.0
+        },
+        {
+            "step_id": 6,
+            "node_id": "node_50b6c77c",
+            "action": "filter_data",
+            "out_name": "Sheet1_筛选 (2) (2)",
+            "params": {
+                "df_name": "Sheet1_清洗",
+                "col_type": "col_name",
+                "logic": "AND",
+                "conditions": [
+                    {
+                        "col": "成立日期",
+                        "op": ">",
+                        "value": "2025-11-26"
+                    }
+                ],
+                "out_name": "Sheet1_筛选 (2) (2)",
+                "df_id": "node_a533f0d1"
+            },
+            "x": 740.0,
+            "y": 480.0
+        },
+        {
+            "step_id": 7,
+            "node_id": "node_7e694704",
+            "action": "left_join",
+            "out_name": "Sheet1_连接 (2)",
+            "params": {
+                "col_type": "col_name",
+                "out_name": "Sheet1_连接 (2)",
+                "df1_name": "Sheet1",
+                "df2_name": "Sheet1",
+                "l_key": "企业名称",
+                "r_key": "企业名称",
+                "get_cols": [
+                    "注册资本"
+                ],
+                "col_names": [
+                    ""
+                ],
+                "df1_id": "node_1237106d",
+                "df2_id": "node_1237106d"
+            },
+            "x": 1060.0,
+            "y": 340.0
+        }
+    ],
+    "hidden_toolbox": [],
+    "hidden_context_menu": [],
+    "naming_style": "默认"
+}

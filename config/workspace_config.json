@@ -1,0 +1,19 @@
+{
+    "design_mode": {
+        "naming_style": "默认",
+        "custom_names": {},
+        "hidden_toolbox": [],
+        "hidden_context_menu": [],
+        "dock_state": "AAAA/wAAAAD9AAAAAgAAAAAAAADcAAACafwCAAAAAfsAAAAYAGQAbwBjAGsAXwB0AG8AbwBsAGIAbwB4AQAAAAAAAAJpAAAAdQD///8AAAADAAAHdAAAAR78AQAAAAH7AAAAGABkAG8AYwBrAF8AcAByAGUAdgBpAGUAdwEAAAAAAAAHdAAAAcUA////AAAGlQAAAmkAAAAEAAAABAAAAAgAAAAI/AAAAAA=",
+        "last_workflow_path": "D:/project_codex/文档处理助手/my_workflow.json",
+        "runtime_parameters": {},
+        "parameter_mappings": {}
+    },
+    "last_mode_index": 0,
+    "execute_mode": {
+        "last_workflow_path": "D:/project_codex/文档处理助手/my_workflow.json",
+        "file_mappings": {
+            "D:/Projects/工商信息.xlsx": "D:/Projects/工商信息.xlsx"
+        }
+    }
+}
