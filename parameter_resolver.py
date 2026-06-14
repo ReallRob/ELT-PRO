@@ -53,6 +53,13 @@ def _format_mapping_key(value):
     return str(parsed)
 
 
+def _format_typed_mapping_key(value, data_type=None):
+    # String 映射键必须保留原始文本，避免编码类值如 001 被转成数字 1。
+    if str(data_type or "").strip() == "String":
+        return "" if value is None else str(value).strip()
+    return _format_mapping_key(value)
+
+
 def _expand_range_literal(value):
     if not isinstance(value, str):
         return None
@@ -128,8 +135,16 @@ def normalize_parameter_mappings(mappings):
             for row in mapping:
                 if isinstance(row, dict) and "from" in row:
                     output = expand_mapping_output(row.get("to"))
-                    for input_value in expand_mapping_inputs(row.get("from")):
-                        mapping_dict[_format_mapping_key(input_value)] = output
+                    source_type = row.get("sourceDataType") or row.get("source_data_type")
+                    # 高级映射会写入 sourceDataType；旧映射没有该字段，继续走原解析逻辑。
+                    if str(source_type or "").strip() == "String":
+                        input_values = row.get("from")
+                        if not isinstance(input_values, (list, tuple, set)):
+                            input_values = [input_values]
+                    else:
+                        input_values = expand_mapping_inputs(row.get("from"))
+                    for input_value in input_values:
+                        mapping_dict[_format_typed_mapping_key(input_value, source_type)] = output
             normalized[name] = mapping_dict
         elif isinstance(mapping, dict):
             mapping_dict = {}
@@ -152,6 +167,22 @@ def _lookup_variable(name, parameters, strict):
     return "${" + name + "}"
 
 
+def _lookup_mapping_value(value, mapping):
+    # 先尝试原始文本键，再尝试旧的字面量键，兼顾强类型字符串和历史规则。
+    raw_key = "" if value is None else str(value).strip()
+    if raw_key in mapping:
+        return True, mapping[raw_key]
+
+    key = _format_mapping_key(value)
+    if key in mapping:
+        return True, mapping[key]
+
+    parsed_key = _format_mapping_key(key)
+    if parsed_key in mapping:
+        return True, mapping[parsed_key]
+    return False, None
+
+
 def _apply_mapping(value, map_name, mappings, strict):
     mapping = mappings.get(map_name)
     if mapping is None:
@@ -159,13 +190,28 @@ def _apply_mapping(value, map_name, mappings, strict):
             raise KeyError(f"未定义参数映射: {map_name}")
         return value
 
-    key = _format_mapping_key(value)
-    if key in mapping:
-        return mapping[key]
+    found, mapped_value = _lookup_mapping_value(value, mapping)
+    if found:
+        return mapped_value
 
-    parsed_key = _format_mapping_key(key)
-    if parsed_key in mapping:
-        return mapping[parsed_key]
+    if isinstance(value, (list, tuple, set)):
+        resolved = []
+        missing = []
+        for item in value:
+            item_found, item_value = _lookup_mapping_value(item, mapping)
+            if not item_found:
+                if strict:
+                    missing.append(item)
+                    continue
+                item_value = item
+            # 数组参数映射时，单项映射到数组会被摊平，支持 1-3 -> [1,2,3]。
+            if isinstance(item_value, (list, tuple)):
+                resolved.extend(item_value)
+            else:
+                resolved.append(item_value)
+        if missing and strict:
+            raise KeyError(f"映射 {map_name} 中找不到输入值: {missing[0]}")
+        return resolved
 
     if strict:
         raise KeyError(f"映射 {map_name} 中找不到输入值: {value}")

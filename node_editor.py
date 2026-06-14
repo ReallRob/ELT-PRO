@@ -20,7 +20,7 @@ from PyQt5.QtGui import (
 import utils
 
 
-METADATA_NODE_TYPES = ("input_param", "param_mapping")
+METADATA_NODE_TYPES = ("input_param", "param_mapping", "advanced_param_mapping")
 
 
 class NodeItem(QGraphicsItem):
@@ -224,6 +224,8 @@ class NodeCanvasScene(QGraphicsScene):
         item = self.itemAt(event.scenePos(), self.views()[0].transform())
         if event.button() == Qt.LeftButton and isinstance(item, NodeItem):
             self.node_double_clicked.emit(item)
+            event.accept()
+            return
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):

@@ -12,8 +12,8 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
 
-from ui_design import DesignModeWidget
-from ui_execute import ExecuteModeWidget
+from ui.design.design_mode import DesignModeWidget
+from ui.execute.execute_mode import ExecuteModeWidget
 
 
 def get_executable_dir():

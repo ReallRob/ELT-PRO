@@ -1,19 +1,23 @@
 """算子注册表：面板注册、分类顺序、命名风格"""
 
-from ui_components import (
-    LoadFilePanel, ExportNodePanel,
-    ExtractPanel, FilterPanel, SortPanel, CleanPanel,
-    DedupPanel, SamplePanel, TransposePanel,
-    GroupPanel, PivotPanel, MeltPanel, DescribePanel,
-    JoinPanel, ConcatPanel,
-    RankPanel, CalcPanel, CumsumPanel, PctChangePanel,
-    ImportTemplatePanel, InsertBlockPanel,
-    InputParamPanel, ParamMappingPanel,
+from operators.panels.aggregate_panels import DescribePanel, GroupPanel, MeltPanel, PivotPanel
+from operators.panels.calc_panels import CalcPanel, CumsumPanel, PctChangePanel, RankPanel
+from operators.panels.io_panels import ExportNodePanel, LoadFilePanel
+from operators.panels.table_panels import ConcatPanel, JoinPanel
+from operators.panels.template_panels import ImportTemplatePanel, InsertBlockPanel
+from operators.panels.transform_panels import (
+    CleanPanel,
+    DedupPanel,
+    ExtractPanel,
+    FilterPanel,
+    SamplePanel,
+    SortPanel,
+    TransposePanel,
 )
+from operators.panels.advanced_param_mapping import AdvancedParamMappingPanel
 
 NODE_REGISTRY = {
-    "input_param":     {"title": "输入参数",   "color": "#1565C0", "panel_class": InputParamPanel,      "category": "参数控制"},
-    "param_mapping":   {"title": "参数映射",   "color": "#6A1B9A", "panel_class": ParamMappingPanel,    "category": "参数控制"},
+    "advanced_param_mapping": {"title": "参数高级映射", "color": "#455A64", "panel_class": AdvancedParamMappingPanel, "category": "参数控制"},
     "load_file":       {"title": "数据源导入", "color": "#1976D2", "panel_class": LoadFilePanel,       "category": "输入输出"},
     "export_df":       {"title": "自动导出",   "color": "#607D8B", "panel_class": ExportNodePanel,      "category": "输入输出"},
     "get_col_data":    {"title": "提取列",     "color": "#009688", "panel_class": ExtractPanel,         "category": "数据变换"},
