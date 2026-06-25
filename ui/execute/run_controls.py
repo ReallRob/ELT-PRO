@@ -63,10 +63,11 @@ class ExecuteRunControlsMixin:
         self.progress_bar.setFormat("完成")
         self.lbl_status.setText("执行完毕")
         self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
-        self.status_detail.setText(f"输出 {len(pool)} 张结果表")
+        data_pool = pool.get("data", pool) if isinstance(pool, dict) else {}
+        self.status_detail.setText(f"输出 {len(data_pool)} 张结果表")
 
         self.graph_view.set_all_nodes_status("success")
-        self.final_pool = pool
+        self.final_pool = data_pool
 
         # 节点是否有可预览数据取决于最终 pool；状态成功不代表一定保留中间表。
         for item in set(self.graph_view.node_items_dict.values()):

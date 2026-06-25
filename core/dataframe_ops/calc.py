@@ -4,7 +4,18 @@ import re
 
 import pandas as pd
 
-from core.dataframe_ops.columns import normalize_columns
+from core.dataframe_ops.code_exec import (
+    DEFAULT_CODE_TIMEOUT_SECONDS,
+    coerce_timeout_seconds,
+    run_dataframe_code,
+)
+from core.dataframe_ops.columns import (
+    _UNRESOLVED,
+    flatten_dataframe_columns,
+    normalize_columns,
+    resolve_column,
+    stringify_column_name,
+)
 
 
 def rank_col(df, col_list, rank_list, col_type="col_name", method="max", ascending=True):
@@ -28,14 +39,19 @@ def rank_col(df, col_list, rank_list, col_type="col_name", method="max", ascendi
 def calc_col(df, new_col_name, formula):
     """Formula calculation using [column name] references."""
     df = df.copy()
+    eval_df = flatten_dataframe_columns(df)
     if formula.startswith("="):
         formula = formula[1:]
 
     def replace_func(match):
         col_name = match.group(1).strip()
-        if col_name not in df.columns:
+        actual_col = resolve_column(df, col_name)
+        if actual_col is _UNRESOLVED:
             raise KeyError(f"数据表中不存在列: 【{col_name}】")
-        return f"`{col_name}`"
+        flat_col = stringify_column_name(actual_col).strip()
+        if flat_col not in eval_df.columns:
+            raise KeyError(f"数据表中不存在列: 【{col_name}】")
+        return f"`{flat_col}`"
 
     try:
         safe_formula = re.sub(r"\[([^\]]+)\]", replace_func, formula)
@@ -43,7 +59,7 @@ def calc_col(df, new_col_name, formula):
             raise SyntaxError(
                 "公式中未检测到任何 [列名] 格式的列引用，请用中括号包裹列名，如：[销售额]*0.1"
             )
-        df[new_col_name] = df.eval(safe_formula)
+        df[new_col_name] = eval_df.eval(safe_formula)
     except KeyError as ke:
         raise ke
     except SyntaxError as se:
@@ -51,11 +67,33 @@ def calc_col(df, new_col_name, formula):
     except Exception as e:
         raise ValueError(
             f"公式计算失败：【{formula}】\n"
-            f"可能原因：1) 列名未用[]包裹  2) 运算符非英文输入法  3) 语法错误\n"
+            f"可能原因：1) 列名未用[]包裹  2) 运算符非英文输入法  3) 语法错误  4) 字段类型不支持该运算，请先使用数据清洗/类型转换处理\n"
             f"内部报错: {str(e)}"
         )
 
     return df
+
+
+def calc_code(
+    df,
+    code,
+    new_col_name="",
+    runtime_parameters=None,
+    parameter_mappings=None,
+    timeout_seconds=DEFAULT_CODE_TIMEOUT_SECONDS,
+):
+    """Run explicit pandas code with df as the current table, with timeout protection."""
+    return run_dataframe_code(
+        {"df": df},
+        code,
+        runtime_parameters=runtime_parameters,
+        parameter_mappings=parameter_mappings,
+        timeout_seconds=coerce_timeout_seconds(timeout_seconds),
+        result_name="",
+        fallback_alias="df",
+        target_col=new_col_name,
+        error_prefix="代码计算",
+    )
 
 
 def cumsum_data(df, col_list, col_type="col_name"):

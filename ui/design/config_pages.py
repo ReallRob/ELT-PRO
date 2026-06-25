@@ -47,12 +47,3 @@ def make_empty_config_page():
         "配置参数会在这里显示",
     )
     return page
-
-
-def make_legacy_operator_page():
-    page, title_label, hint_label = _make_message_card(
-        "旧参数算子已合并",
-        "请新建“参数高级映射”算子维护输入参数与映射规则。",
-        word_wrap=True,
-    )
-    return page, title_label, hint_label

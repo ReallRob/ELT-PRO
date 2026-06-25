@@ -52,6 +52,8 @@ class DesignModeWidget(
         self.custom_names = {}
         self.runtime_parameters = {}
         self.parameter_mappings = {}
+        self.crpa_metadata = {}
+        self.run_manifest = {}
 
         self.init_ui()
 
@@ -66,7 +68,7 @@ class DesignModeWidget(
         # === Dockable Layout: Toolbox | Canvas | Preview ===
         main_layout.addWidget(build_dock_workspace(self), stretch=1)
 
-        # === Config Dialog (card-style popup) ===
+        # === Right Inspector Dock ===
         build_config_dialog(self)
 
         # === Bottom Status Bar ===

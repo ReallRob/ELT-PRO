@@ -2,7 +2,7 @@
 
 import pandas as pd
 
-from core.dataframe_ops.columns import normalize_columns
+from core.dataframe_ops.columns import flatten_dataframe_columns, normalize_columns
 
 
 def group_calc(df, group_key, col_dict, col_type="col_name"):
@@ -35,7 +35,7 @@ def group_calc(df, group_key, col_dict, col_type="col_name"):
         }
         grouped = grouped.rename(columns=rename_mapping)
 
-    return grouped
+    return flatten_dataframe_columns(grouped)
 
 
 def pivot_table(df, index_cols, columns_col, values_col, aggfunc="sum",
@@ -57,7 +57,7 @@ def pivot_table(df, index_cols, columns_col, values_col, aggfunc="sum",
         aggfunc=aggfunc, fill_value=fill_value, margins=margins,
         margins_name="总计" if margins else "",
     )
-    return result.reset_index()
+    return flatten_dataframe_columns(result.reset_index())
 
 
 def melt_table(df, id_cols, value_cols, var_name="变量", value_name="值",
@@ -72,7 +72,7 @@ def melt_table(df, id_cols, value_cols, var_name="变量", value_name="值",
         ids = [c for c in df.columns if c not in vals]
     result = pd.melt(df, id_vars=ids, value_vars=vals,
                      var_name=var_name, value_name=value_name)
-    return result
+    return flatten_dataframe_columns(result)
 
 
 def describe_data(df, percentiles=None):
@@ -80,4 +80,4 @@ def describe_data(df, percentiles=None):
     if percentiles is None:
         percentiles = [0.25, 0.5, 0.75]
     result = df.describe(percentiles=percentiles)
-    return result.reset_index()
+    return flatten_dataframe_columns(result.reset_index())

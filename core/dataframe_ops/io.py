@@ -45,16 +45,22 @@ def _normalize_source_options(
     }
 
 
-def _slice_source_columns(df, start_col=1, ncols=None):
+def _source_usecols(start_col, ncols, total_cols):
     start_index = start_col - 1
-    total_cols = len(df.columns)
     if total_cols == 0:
-        return df.copy()
+        return []
     if start_index >= total_cols:
         raise ValueError(f"起始列超出文件列数：文件共有 {total_cols} 列")
+    end_index = start_index + ncols if ncols is not None else total_cols
+    return list(range(start_index, min(end_index, total_cols)))
 
-    end_index = start_index + ncols if ncols is not None else None
-    return df.iloc[:, start_index:end_index].copy()
+
+def _read_source_header(path_text, sheet_name, header, skiprows):
+    read_kwargs = {"skiprows": skiprows, "nrows": 0, "header": header}
+    if path_text.lower().endswith((".xlsx", ".xls", ".xlsm")):
+        sheet = sheet_name if sheet_name != CSV_SHEET_LABEL else 0
+        return pd.read_excel(path_text, sheet_name=sheet, **read_kwargs)
+    return pd.read_csv(path_text, **read_kwargs)
 
 
 def read_source_file(
@@ -81,15 +87,20 @@ def read_source_file(
         "nrows": options["nrows"],
         "header": header,
     }
+    needs_column_subset = options["start_col"] != 1 or options["ncols"] is not None
+    if needs_column_subset:
+        header_df = _read_source_header(
+            path_text, sheet_name, header, options["skiprows"]
+        )
+        read_kwargs["usecols"] = _source_usecols(
+            options["start_col"], options["ncols"], len(header_df.columns)
+        )
 
-    if path_text.lower().endswith((".xlsx", ".xls")):
+    if path_text.lower().endswith((".xlsx", ".xls", ".xlsm")):
         sheet = sheet_name if sheet_name != CSV_SHEET_LABEL else 0
         df = pd.read_excel(path_text, sheet_name=sheet, **read_kwargs)
     else:
         df = pd.read_csv(path_text, **read_kwargs)
-
-    # 列裁剪放在读取后，保证 Excel/CSV、有无表头模式使用同一套语义。
-    df = _slice_source_columns(df, options["start_col"], options["ncols"])
     if not options["has_header"]:
         first_col = options["start_col"]
         df.columns = [f"列{first_col + i}" for i in range(len(df.columns))]
@@ -98,30 +109,29 @@ def read_source_file(
 
 def export_df(df, target_path, default_dir):
     save_p = Path(target_path)
-    actual_path = target_path
-    success = False
+
+    def write_file(path):
+        if str(path).lower().endswith(".csv"):
+            df.to_csv(path, index=False, encoding="utf-8-sig")
+        else:
+            df.to_excel(path, index=False)
+
+    if save_p.parent.exists():
+        try:
+            write_file(target_path)
+        except Exception as exc:
+            raise RuntimeError(f"导出失败: {target_path}\n原因: {exc}") from exc
+        return True, target_path
+
+    fname = save_p.name if save_p.name else "自动导出结果.xlsx"
+    if not fname.endswith((".xlsx", ".csv")):
+        fname += ".xlsx"
+    fallback_path = Path(default_dir) / fname
     try:
-        if save_p.parent.exists():
-            if str(target_path).lower().endswith(".csv"):
-                df.to_csv(target_path, index=False, encoding="utf-8-sig")
-            else:
-                df.to_excel(target_path, index=False)
-            success = True
-        else:
-            success = False
-    except Exception:
-        success = False
-
-    if not success:
-        fname = save_p.name if save_p.name else "自动导出结果.xlsx"
-        if not fname.endswith((".xlsx", ".csv")):
-            fname += ".xlsx"
-        fallback_path = Path(default_dir) / fname
-
-        if str(fallback_path).lower().endswith(".csv"):
-            df.to_csv(fallback_path, index=False, encoding="utf-8-sig")
-        else:
-            df.to_excel(fallback_path, index=False)
-        actual_path = str(fallback_path)
-
-    return success, actual_path
+        write_file(fallback_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"目标目录不存在，已尝试降级到默认目录但仍导出失败。\n"
+            f"原路径: {target_path}\n降级路径: {fallback_path}\n原因: {exc}"
+        ) from exc
+    return False, str(fallback_path)

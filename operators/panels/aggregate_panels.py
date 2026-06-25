@@ -55,12 +55,7 @@ class GroupPanel(BaseToolPanel):
         self.group_keys_layout.setSpacing(4)
         inner1.addLayout(self.group_keys_layout)
         self.add_group_key_row()
-        btn_add_key = QPushButton("+ 添加分组列")
-        btn_add_key.setStyleSheet(
-            "QPushButton { background: #EDE7F6; border: 1px dashed #B39DDB; "
-            "border-radius: 4px; padding: 6px; color: #4527A0; font-size: 12px; }"
-            "QPushButton:hover { background: #D1C4E9; }"
-        )
+        btn_add_key = self._make_add_button("+ 添加分组列")
         btn_add_key.clicked.connect(lambda: self.add_group_key_row())
         inner1.addWidget(btn_add_key)
 
@@ -70,16 +65,10 @@ class GroupPanel(BaseToolPanel):
         self.rules_layout.setSpacing(4)
         inner2.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加聚合规则")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #EDE7F6; border: 1px dashed #B39DDB; "
-            "border-radius: 4px; padding: 6px; color: #4527A0; font-size: 12px; }"
-            "QPushButton:hover { background: #D1C4E9; }"
-        )
+        btn_add = self._make_add_button("+ 添加聚合规则")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner2.addWidget(btn_add)
-        hint = QLabel("sum(求和), mean(平均), max, min, count(计数), first(取第一行)")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("sum 求和，mean 平均，max/min 最大最小，count 计数，first 取第一行。")
         inner2.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -95,34 +84,47 @@ class GroupPanel(BaseToolPanel):
         col_combo = self._make_col_combo("分组列")
         col_combo.setObjectName("group_col")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.group_keys_layout.addWidget(row)
 
     def add_rule_row(self, col="", func="sum", rename=""):
         row = QWidget()
-        l = QHBoxLayout(row)
-        l.setContentsMargins(0, 0, 0, 0)
-        col_combo = self._make_col_combo("运算列", dtype_filter="numeric")
+        outer = QVBoxLayout(row)
+        outer.setContentsMargins(0, 0, 0, 6)
+        outer.setSpacing(6)
+        col_row = QHBoxLayout()
+        col_row.setContentsMargins(0, 0, 0, 0)
+        col_row.setSpacing(6)
+        col_combo = self._make_col_combo("运算列")
         col_combo.setObjectName("col")
+        col_combo.setMinimumWidth(180)
         self._set_col_name(col_combo, str(col))
+
+        option_row = QHBoxLayout()
+        option_row.setContentsMargins(0, 0, 0, 0)
+        option_row.setSpacing(6)
         f_combo = QComboBox()
         f_combo.setObjectName("func")
         f_combo.addItems(["sum", "mean", "max", "min", "count", "first"])
         f_combo.setCurrentText(func)
+        f_combo.setMinimumWidth(86)
+        f_combo.setMaximumWidth(112)
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("重命名(可选)")
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
-        l.addWidget(f_combo)
-        l.addWidget(r_input)
-        l.addWidget(btn_rm)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        col_row.addWidget(col_combo, stretch=1)
+        col_row.addWidget(btn_rm)
+        option_row.addWidget(self._inline_label("方式"))
+        option_row.addWidget(f_combo)
+        option_row.addWidget(self._inline_label("命名"))
+        option_row.addWidget(r_input, stretch=1)
+        outer.addLayout(col_row)
+        outer.addLayout(option_row)
         self.rules_layout.addWidget(row)
 
     def set_custom_params(self, p):
@@ -206,12 +208,7 @@ class PivotPanel(BaseToolPanel):
         self.index_layout.setSpacing(4)
         inner.addLayout(self.index_layout)
         self.add_index_row()
-        btn_add_idx = QPushButton("+ 添加行标签")
-        btn_add_idx.setStyleSheet(
-            "QPushButton { background: #F3E5F5; border: 1px dashed #CE93D8; "
-            "border-radius: 4px; padding: 6px; color: #7B1FA2; font-size: 12px; }"
-            "QPushButton:hover { background: #E1BEE7; }"
-        )
+        btn_add_idx = self._make_add_button("+ 添加行标签")
         btn_add_idx.clicked.connect(lambda: self.add_index_row())
         inner.addWidget(btn_add_idx)
 
@@ -229,6 +226,8 @@ class PivotPanel(BaseToolPanel):
         inner.addWidget(self.agg_combo)
 
         fl = QFormLayout()
+        fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.fill_input = QLineEdit("0")
         fl.addRow("空值填充:", self.fill_input)
         self.margin_combo = QComboBox()
@@ -242,10 +241,9 @@ class PivotPanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("行标签列")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.index_layout.addWidget(row)
 
@@ -316,12 +314,7 @@ class MeltPanel(BaseToolPanel):
         self.id_layout.setSpacing(4)
         inner.addLayout(self.id_layout)
         self.add_id_row()
-        btn_add_id = QPushButton("+ 添加保留列")
-        btn_add_id.setStyleSheet(
-            "QPushButton { background: #E0F2F1; border: 1px dashed #80CBC4; "
-            "border-radius: 4px; padding: 6px; color: #00695C; font-size: 12px; }"
-            "QPushButton:hover { background: #B2DFDB; }"
-        )
+        btn_add_id = self._make_add_button("+ 添加保留列")
         btn_add_id.clicked.connect(lambda: self.add_id_row())
         inner.addWidget(btn_add_id)
 
@@ -330,16 +323,13 @@ class MeltPanel(BaseToolPanel):
         self.val_layout.setSpacing(4)
         inner.addLayout(self.val_layout)
         self.add_val_row()
-        btn_add_val = QPushButton("+ 添加融合列")
-        btn_add_val.setStyleSheet(
-            "QPushButton { background: #E0F2F1; border: 1px dashed #80CBC4; "
-            "border-radius: 4px; padding: 6px; color: #00695C; font-size: 12px; }"
-            "QPushButton:hover { background: #B2DFDB; }"
-        )
+        btn_add_val = self._make_add_button("+ 添加融合列")
         btn_add_val.clicked.connect(lambda: self.add_val_row())
         inner.addWidget(btn_add_val)
 
         fl = QFormLayout()
+        fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.var_input = QLineEdit("变量")
         fl.addRow("新列名(变量):", self.var_input)
         self.val_name_input = QLineEdit("值")
@@ -352,10 +342,9 @@ class MeltPanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("保留列")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.id_layout.addWidget(row)
 
@@ -365,10 +354,9 @@ class MeltPanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("融合列")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.val_layout.addWidget(row)
 
@@ -441,20 +429,13 @@ class DescribePanel(BaseToolPanel):
         self.add_pct_row("0.25")
         self.add_pct_row("0.5")
         self.add_pct_row("0.75")
-        btn_add = QPushButton("+ 添加分位数")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E8EAF6; border: 1px dashed #9FA8DA; "
-            "border-radius: 4px; padding: 6px; color: #283593; font-size: 12px; }"
-            "QPushButton:hover { background: #C5CAE9; }"
-        )
+        btn_add = self._make_add_button("+ 添加分位数")
         btn_add.clicked.connect(lambda: self.add_pct_row())
         inner.addWidget(btn_add)
 
         hint_card, hint_inner = self._make_card()
         self.custom_layout.addWidget(hint_card)
-        hint = QLabel("输出均值/标准差/最大最小/分位数等统计信息。")
-        hint.setStyleSheet("color: #888; font-size: 11px; border: none;")
-        hint.setWordWrap(True)
+        hint = self._make_hint_label("输出均值、标准差、最大最小、分位数等统计信息。")
         hint_inner.addWidget(hint)
 
     def add_pct_row(self, val=""):
@@ -465,9 +446,8 @@ class DescribePanel(BaseToolPanel):
         inp.setObjectName("pct_val")
         inp.setPlaceholderText("如: 0.25")
         inp.setMinimumWidth(80)
-        rm = QPushButton("×")
-        rm.setFixedWidth(25)
-        rm.clicked.connect(row.deleteLater)
+        rm = self._make_delete_button()
+        rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
         l.addWidget(inp)
         l.addWidget(rm)
         l.addStretch()
@@ -496,7 +476,9 @@ class DescribePanel(BaseToolPanel):
 
     def set_custom_params(self, p):
         if "percentiles" in p and p["percentiles"]:
-            self.pct_input.setText(", ".join(str(x) for x in p["percentiles"]))
+            self.clear_dynamic_layout(self.pct_layout)
+            for value in p["percentiles"]:
+                self.add_pct_row(str(value))
 
     def execute(self):
         p = self.get_params()

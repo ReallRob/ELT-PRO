@@ -4,6 +4,16 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from table_model import PandasModel
 
+PREVIEW_ROW_LIMIT = 5000
+
+
+def _is_template_preview(value):
+    return (
+        isinstance(value, dict)
+        and value.get("_template_preview")
+        and isinstance(value.get("sheets"), dict)
+    )
+
 
 class ExecutePreviewMixin:
     def on_node_clicked(self, table_name, is_action):
@@ -13,15 +23,31 @@ class ExecutePreviewMixin:
         self.current_preview_table = table_name
 
         if table_name in self.final_pool:
-            df = self.final_pool[table_name]
-            self.preview_title.setText(
-                f"当前预览: 【{table_name}】 ({df.shape[0]} 行, {df.shape[1]} 列)"
-            )
+            value = self.final_pool[table_name]
+            if _is_template_preview(value):
+                sheets = value.get("sheets") or {}
+                sheet_name, df = next(iter(sheets.items()), ("", None))
+                if df is None:
+                    self.preview_title.setText(
+                        f"当前预览: 【{table_name}】 (模板无可预览工作表)"
+                    )
+                    self.result_table.setModel(None)
+                    self.btn_export_preview.hide()
+                    return
+                self.preview_title.setText(
+                    f"当前预览: 【{table_name} / {sheet_name}】 "
+                    f"({df.shape[0]} 行, {df.shape[1]} 列，共 {len(sheets)} 个工作表)"
+                )
+            else:
+                df = value
+                self.preview_title.setText(
+                    f"当前预览: 【{table_name}】 ({df.shape[0]} 行, {df.shape[1]} 列)"
+                )
+
             self.preview_title.setStyleSheet(
                 "padding: 5px; color: #2196F3; font-weight: bold;"
             )
-
-            model = PandasModel(df)
+            model = PandasModel(df, max_preview_rows=PREVIEW_ROW_LIMIT)
             self.result_table.setModel(model)
             self.btn_export_preview.show()
         else:
@@ -43,6 +69,7 @@ class ExecutePreviewMixin:
             QMessageBox.warning(self, "错误", "该表尚无结果数据或内存已被释放。")
             return
 
+        value = self.final_pool[table_name]
         path, _ = QFileDialog.getSaveFileName(
             self,
             f"导出 {table_name}",
@@ -51,12 +78,18 @@ class ExecutePreviewMixin:
         )
         if path:
             try:
-                if path.endswith(".csv"):
-                    self.final_pool[table_name].to_csv(
-                        path, index=False, encoding="utf-8-sig"
-                    )
+                if _is_template_preview(value):
+                    if path.endswith(".csv"):
+                        _, first_df = next(iter(value.get("sheets", {}).items()))
+                        first_df.to_csv(path, index=False, header=False, encoding="utf-8-sig")
+                    else:
+                        with __import__("pandas").ExcelWriter(path) as writer:
+                            for sheet_name, df in value.get("sheets", {}).items():
+                                df.to_excel(writer, sheet_name=sheet_name[:31], index=False, header=False)
+                elif path.endswith(".csv"):
+                    value.to_csv(path, index=False, encoding="utf-8-sig")
                 else:
-                    self.final_pool[table_name].to_excel(path, index=False)
+                    value.to_excel(path, index=False)
                 self.log_print(f"[成功] 成功导出表格至: {path}")
                 QMessageBox.information(self, "导出成功", f"文件已保存：\n{path}")
             except Exception as e:

@@ -9,6 +9,7 @@ from node_editor import NodeItem
 from ui.design.workflow_io import (
     apply_file_mapping,
     attach_design_preferences,
+    attach_publish_metadata,
     find_missing_load_files,
     load_workflow_file,
     restore_design_preferences,
@@ -20,6 +21,26 @@ from ui.dialogs.path_remap import PathRemapDialog
 
 
 class ImportExportUIMixin:
+    def _reset_canvas_selection_state(self):
+        self.current_selected_node = None
+        if hasattr(self, "config_area") and hasattr(self, "panel_instances"):
+            empty = self.panel_instances.get("sys_empty")
+            if empty is not None:
+                self.config_area.setCurrentWidget(empty)
+        if hasattr(self, "combo_preview_tables"):
+            self._is_updating_combo = True
+            self.combo_preview_tables.blockSignals(True)
+            self.combo_preview_tables.clear()
+            self.combo_preview_tables.addItem("暂无数据")
+            self.combo_preview_tables.blockSignals(False)
+            self._is_updating_combo = False
+        if hasattr(self, "preview_tabs"):
+            self.preview_tabs.clear()
+        if hasattr(self, "_current_tab_shapes"):
+            self._current_tab_shapes.clear()
+        if hasattr(self, "lbl_shape"):
+            self.lbl_shape.setText("(0 行 0 列)")
+
     def _auto_load_workflow(self, path):
         """启动时静默加载上次工作流（不弹窗、不执行）。"""
         try:
@@ -29,19 +50,21 @@ class ImportExportUIMixin:
             if not steps:
                 return
 
+            self._reset_canvas_selection_state()
             self.ctx.clear_context()
             restore_steps_to_scene(steps, self.canvas_scene)
+            self._sync_runtime_parameters()
 
             self._update_status_bar()
-            QTimer.singleShot(100, self.run_full_workflow)
             QTimer.singleShot(
                 0,
                 lambda: self.canvas_view.centerOn(
                     self.canvas_scene.itemsBoundingRect().center()
                 ),
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            if hasattr(self, "status_label"):
+                self.status_label.setText(f"自动加载工作流失败: {exc}")
 
     def export_workflow(self):
         self.save_current_node_draft()
@@ -59,6 +82,11 @@ class ImportExportUIMixin:
             self.hidden_context_menu,
             self.naming_style,
             self.custom_names,
+        )
+        attach_publish_metadata(
+            config,
+            getattr(self, "crpa_metadata", {}),
+            getattr(self, "run_manifest", {}),
         )
 
         path, _ = QFileDialog.getSaveFileName(
@@ -94,8 +122,10 @@ class ImportExportUIMixin:
                 else:
                     return
 
+            self._reset_canvas_selection_state()
             self.ctx.clear_context()
             restore_steps_to_scene(steps, self.canvas_scene)
+            self._sync_runtime_parameters()
 
             QTimer.singleShot(
                 0,

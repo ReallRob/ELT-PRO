@@ -133,9 +133,7 @@ class WorkflowGraphView(QGraphicsView):
         steps = workflow_config.get("steps", [])
 
         action_names = {
-            "input_param": "输入参数",
-            "param_mapping": "参数映射",
-            "advanced_param_mapping": "参数高级映射",
+            "advanced_param_mapping": "参数输入",
             "load_file": "数据源导入",
             "get_col_data": "提取列",
             "filter_data": "数据筛选",
@@ -146,6 +144,9 @@ class WorkflowGraphView(QGraphicsView):
             "calc_col": "公式计算",
             "clean_data": "数据清洗",
             "export_df": "自动导出",
+            "import_template": "导入模板",
+            "insert_block": "插入模板",
+            "code_block": "代码块",
         }
 
         unique_items = []
@@ -185,6 +186,13 @@ class WorkflowGraphView(QGraphicsView):
                 deps.append(params["df2_id"])
             if "df_id" in params:
                 deps.append(params["df_id"])
+            if "template_id" in params:
+                deps.append(params["template_id"])
+            for insert_id in params.get("insert_block_ids", []) or []:
+                deps.append(insert_id)
+            for binding in params.get("input_bindings", []) or []:
+                if isinstance(binding, dict) and binding.get("df_id"):
+                    deps.append(binding["df_id"])
 
             if not deps:
                 if "df1_name" in params:

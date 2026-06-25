@@ -225,7 +225,7 @@ class ParameterTextEdit(QTextEdit):
 
         self.param_button = QToolButton(self)
         self.param_button.setIcon(self.style().standardIcon(QStyle.SP_FileDialogDetailedView))
-        self.param_button.setToolTip("引入参数")
+        self.param_button.setToolTip("引用参数")
         self.param_button.setCursor(Qt.PointingHandCursor)
         self.param_button.clicked.connect(lambda: self.parameterMenuRequested.emit(self))
         self.param_button.setFixedSize(24, 24)

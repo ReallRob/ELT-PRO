@@ -1,6 +1,12 @@
 """Canvas node actions for design mode."""
 
+import copy
 import uuid
+
+try:
+    from PyQt5 import sip
+except ImportError:  # pragma: no cover - depends on PyQt packaging
+    sip = None
 
 from PyQt5.QtCore import QPointF, QTimer
 from PyQt5.QtWidgets import QMessageBox
@@ -9,9 +15,33 @@ import utils
 from node_editor import EdgeItem, NodeItem
 from operator_registry import NODE_REGISTRY, get_operator_title
 
+RUNTIME_DEPENDENCY_KEYS = {
+    "df_id",
+    "df1_id",
+    "df2_id",
+    "template_id",
+    "insert_block_ids",
+    "input_bindings",
+}
+
+
+def _copied_title(title):
+    text = str(title or "").strip()
+    return f"{text} 副本" if text else "副本"
+
 
 class CanvasActionsMixin:
+    def _is_deleted_qt_object(self, obj):
+        if obj is None or sip is None:
+            return False
+        try:
+            return sip.isdeleted(obj)
+        except Exception:
+            return False
+
     def _delete_single_node(self, node):
+        if hasattr(self, "_is_deleted_qt_object") and self._is_deleted_qt_object(node):
+            return
         reply = QMessageBox.question(
             self,
             "确认删除",
@@ -20,15 +50,23 @@ class CanvasActionsMixin:
         )
         if reply != QMessageBox.Yes:
             return
+        if getattr(self, "current_selected_node", None) is node:
+            self.current_selected_node = None
+            self.on_canvas_node_selected(None)
         for edge in list(node.edges_in):
-            edge.source_node.edges_out.remove(edge)
+            if self._is_deleted_qt_object(edge):
+                continue
+            if not self._is_deleted_qt_object(edge.source_node) and edge in edge.source_node.edges_out:
+                edge.source_node.edges_out.remove(edge)
             self.canvas_scene.removeItem(edge)
         for edge in list(node.edges_out):
-            edge.dest_node.edges_in.remove(edge)
+            if self._is_deleted_qt_object(edge):
+                continue
+            if not self._is_deleted_qt_object(edge.dest_node) and edge in edge.dest_node.edges_in:
+                edge.dest_node.edges_in.remove(edge)
             self.canvas_scene.removeItem(edge)
         self.canvas_scene.removeItem(node)
-        if self.current_selected_node == node:
-            self.current_selected_node = None
+        self._sync_runtime_parameters()
         self._update_status_bar()
 
     def add_node_at_pos(self, action, scene_pos):
@@ -43,6 +81,7 @@ class CanvasActionsMixin:
             config["color"],
             scene_pos.x(),
             scene_pos.y(),
+            operator_name=title,
         )
         node.params["action"] = action
         node.is_dirty = True
@@ -79,12 +118,13 @@ class CanvasActionsMixin:
             self.lbl_shape.setText("")
             self.current_selected_node = None
             self.config_area.setCurrentWidget(self.panel_instances["sys_empty"])
-            self.config_dialog.hide()
+            self._sync_runtime_parameters()
             self._update_status_bar()
             QTimer.singleShot(0, self.canvas_view.center_on_canvas)
 
     def delete_canvas_node(self):
         self.canvas_scene.delete_selected_items()
+        self._sync_runtime_parameters()
         self._update_status_bar()
 
     def add_node_to_canvas(self, action):
@@ -96,6 +136,89 @@ class CanvasActionsMixin:
             action,
             QPointF(scene_pos.x() - 80 + offset, scene_pos.y() - 30 + offset),
         )
+
+    def _selected_nodes_for_copy(self):
+        selected = [
+            item for item in self.canvas_scene.selectedItems() if isinstance(item, NodeItem)
+        ]
+        if selected:
+            return selected
+        node = getattr(self, "current_selected_node", None)
+        if node is not None and not self._is_deleted_qt_object(node):
+            return [node]
+        return []
+
+    def _copyable_params(self, node):
+        params = copy.deepcopy(getattr(node, "params", {}) or {})
+        for key in RUNTIME_DEPENDENCY_KEYS:
+            params.pop(key, None)
+        params["action"] = node.action_type
+        if "out_name" in params:
+            params["out_name"] = _copied_title(params.get("out_name"))
+        return params
+
+    def copy_selected_nodes(self):
+        self.save_current_node_draft()
+        source_nodes = self._selected_nodes_for_copy()
+        if not source_nodes:
+            return
+
+        source_nodes.sort(key=lambda node: (node.scenePos().y(), node.scenePos().x()))
+        copied_nodes = []
+        offset = QPointF(40, 40)
+
+        for node in source_nodes:
+            config = NODE_REGISTRY.get(node.action_type, {})
+            copied = NodeItem(
+                f"node_{uuid.uuid4().hex[:8]}",
+                node.action_type,
+                _copied_title(node.title),
+                config.get("color", node.color),
+                node.scenePos().x() + offset.x(),
+                node.scenePos().y() + offset.y(),
+                operator_name=get_operator_title(
+                    node.action_type, self.naming_style, self.custom_names
+                ),
+            )
+            copied.params = self._copyable_params(node)
+            if "out_name" in copied.params:
+                copied.title = str(copied.params["out_name"])
+            copied.is_dirty = True
+            self.canvas_scene.addItem(copied)
+            copied_nodes.append(copied)
+
+        copied_by_old_id = {
+            old.node_id: new for old, new in zip(source_nodes, copied_nodes)
+        }
+        for old_node in source_nodes:
+            new_source = copied_by_old_id.get(old_node.node_id)
+            if new_source is None:
+                continue
+            for edge in old_node.edges_out:
+                old_dest = edge.dest_node
+                new_dest = copied_by_old_id.get(getattr(old_dest, "node_id", None))
+                if new_dest is None:
+                    continue
+                new_edge = EdgeItem(new_source, new_dest)
+                self.canvas_scene.addItem(new_edge)
+                new_source.edges_out.append(new_edge)
+                new_dest.edges_in.append(new_edge)
+
+        self.canvas_scene.clearSelection()
+        for node in copied_nodes:
+            node.setSelected(True)
+        self.on_canvas_node_selected(copied_nodes[-1])
+        self._sync_runtime_parameters()
+        self._update_status_bar()
+        self.canvas_scene.edge_changed.emit()
+
+    def _copy_single_node_from_menu(self, node):
+        if self._is_deleted_qt_object(node):
+            return
+        self.canvas_scene.clearSelection()
+        node.setSelected(True)
+        self.on_canvas_node_selected(node)
+        self.copy_selected_nodes()
 
     def auto_layout_nodes(self):
         nodes = [item for item in self.canvas_scene.items() if isinstance(item, NodeItem)]

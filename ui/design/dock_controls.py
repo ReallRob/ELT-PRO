@@ -29,10 +29,17 @@ class DockControlsMixin:
         """恢复默认停靠位置。"""
         self.dock_toolbox.setFloating(False)
         self.dock_preview.setFloating(False)
+        self.dock_config.setFloating(False)
         self.dock_main.addDockWidget(Qt.LeftDockWidgetArea, self.dock_toolbox)
-        self.dock_main.addDockWidget(Qt.RightDockWidgetArea, self.dock_preview)
+        self.dock_main.addDockWidget(Qt.RightDockWidgetArea, self.dock_config)
+        self.dock_main.addDockWidget(Qt.BottomDockWidgetArea, self.dock_preview)
         self.dock_toolbox.show()
+        self.dock_config.show()
         self.dock_preview.show()
+        self.dock_main.resizeDocks(
+            [self.dock_toolbox, self.dock_config], [240, 360], Qt.Horizontal
+        )
+        self.dock_main.resizeDocks([self.dock_preview], [220], Qt.Vertical)
         # 清除窗口置顶标志，避免重置后浮窗仍压在主窗口上。
         for dock in self._all_docks:
             if dock.isFloating():

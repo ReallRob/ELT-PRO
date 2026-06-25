@@ -4,7 +4,6 @@ from PyQt5.QtCore import QThread, pyqtSignal
 
 from core.workflow.action_handlers import (
     collect_action_dependencies,
-    get_exec_dir,
     handle_parameter_action,
     run_action,
     should_log_dataframe_shape,
@@ -14,6 +13,7 @@ from parameter_resolver import (
     clone_resolved_runtime_value,
     normalize_runtime_parameters,
 )
+from template_engine import close_workbook, workbook_to_preview_data
 
 
 class WorkflowEngine(QThread):
@@ -37,26 +37,16 @@ class WorkflowEngine(QThread):
             raise ValueError(f"无法在内存中找到上游输入表，请检查连线！(ID: {df_id})")
         return df
 
-    def _get_df(self, df_id):
-        """Compatibility alias for older helper code that still calls _get_df."""
-        return self.get_df(df_id)
-
     def _collect_runtime_metadata(self, steps):
-        parameters = {}
-        mappings = {}
+        parameters = normalize_runtime_parameters(
+            self.workflow_config.get("runtime_parameters", {})
+        )
+        mappings = dict(self.workflow_config.get("parameter_mappings", {}) or {})
 
         for step in steps:
             action = step.get("action")
             params = step.get("params", {})
-            if action == "input_param":
-                parameters.update(
-                    normalize_runtime_parameters(params.get("parameters", {}))
-                )
-            elif action == "param_mapping":
-                mapping_name = str(params.get("mapping_name", "")).strip()
-                if mapping_name:
-                    mappings[mapping_name] = params.get("rules", [])
-            elif action == "advanced_param_mapping":
+            if action == "advanced_param_mapping":
                 typed_params = params.get("typed_parameters")
                 if isinstance(typed_params, dict):
                     parameters.update(typed_params)
@@ -65,14 +55,6 @@ class WorkflowEngine(QThread):
                         normalize_runtime_parameters(params.get("parameters", {}))
                     )
                 mappings.update(params.get("parameter_mappings", {}) or {})
-
-        # 工作流根级参数覆盖节点内参数，兼容旧 JSON 的同时让最新配置优先。
-        parameters.update(
-            normalize_runtime_parameters(
-                self.workflow_config.get("runtime_parameters", {})
-            )
-        )
-        mappings.update(self.workflow_config.get("parameter_mappings", {}) or {})
         return parameters, mappings
 
     def _build_ref_count(self, steps):
@@ -91,7 +73,19 @@ class WorkflowEngine(QThread):
         df = self.data_pool[node_id]
         self.log(f"    - 完成. 数据规模: {df.shape[0]} 行, {df.shape[1]} 列")
 
-    def _publish_output_if_needed(self, action, node_id, out_name, display_pool, dedup_counters, ref_count):
+    def _to_display_value(self, value):
+        if not (isinstance(value, dict) and value.get("_wb") is not None):
+            return value
+        return workbook_to_preview_data(value.get("_wb"), value.get("_saved_path", ""))
+
+    def _close_workbooks(self):
+        for value in list(self.data_pool.values()):
+            if isinstance(value, dict):
+                close_workbook(value.get("_wb"))
+
+    def _publish_output_if_needed(
+        self, action, node_id, out_name, display_pool, dedup_counters, ref_count
+    ):
         if not should_publish_output(action):
             return
         if ref_count.get(node_id, 0) != 0 and not self.keep_intermediates:
@@ -103,7 +97,7 @@ class WorkflowEngine(QThread):
             dedup_counters[out_name] = counter
             key = f"{out_name} ({counter})"
 
-        display_pool[key] = self.data_pool[node_id]
+        display_pool[key] = self._to_display_value(self.data_pool[node_id])
         self._dedup_map[node_id] = key
 
     def _release_consumed_dependencies(self, action, params, ref_count):
@@ -125,6 +119,8 @@ class WorkflowEngine(QThread):
             total_steps = len(steps)
             workflow_name = self.workflow_config.get("workflow_name", "未命名")
             runtime_parameters, parameter_mappings = self._collect_runtime_metadata(steps)
+            self.runtime_parameters = runtime_parameters
+            self.parameter_mappings = parameter_mappings
 
             self.data_pool = {}
             display_pool = {}
@@ -170,12 +166,14 @@ class WorkflowEngine(QThread):
                 except Exception as step_e:
                     err_msg = traceback.format_exc()
                     self.log(
-                        f"\n    × [步骤 {step_id}] 节点执行失败！\n原因: {str(step_e)}\n{err_msg}"
+                        f"\n    × [步骤 {step_id}] 节点执行失败：\n原因: {step_e}\n{err_msg}"
                     )
+                    self._close_workbooks()
                     self.finished_signal.emit(False, {})
                     return
 
             self.log("\n成功！所有节点执行完毕。")
+            self._close_workbooks()
             self.finished_signal.emit(
                 True,
                 {
@@ -187,4 +185,5 @@ class WorkflowEngine(QThread):
         except Exception:
             err_msg = traceback.format_exc()
             self.log(f"\n× 致命错误: 引擎解析崩溃\n{err_msg}")
+            self._close_workbooks()
             self.finished_signal.emit(False, {})

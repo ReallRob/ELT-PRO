@@ -1,8 +1,9 @@
 """DataFrame operator functions grouped by domain."""
 
 from core.dataframe_ops.aggregate import describe_data, group_calc, melt_table, pivot_table
-from core.dataframe_ops.calc import calc_col, cumsum_data, pct_change_data, rank_col
+from core.dataframe_ops.calc import calc_code, calc_col, cumsum_data, pct_change_data, rank_col
 from core.dataframe_ops.clean import clean_data, drop_duplicates, sample_data
+from core.dataframe_ops.code_block import code_block
 from core.dataframe_ops.columns import map_col, normalize_columns
 from core.dataframe_ops.filter import filter_data
 from core.dataframe_ops.io import CSV_SHEET_LABEL, export_df, read_source_file
@@ -23,6 +24,8 @@ __all__ = [
     "transpose_data",
     "rank_col",
     "calc_col",
+    "calc_code",
+    "code_block",
     "cumsum_data",
     "pct_change_data",
     "clean_data",

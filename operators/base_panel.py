@@ -3,7 +3,9 @@
 import copy
 
 import pandas as pd
+from core.dataframe_ops.columns import stringify_column_name
 from PyQt5.QtCore import QEvent, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PyQt5.QtWidgets import (
     QAction,
     QComboBox,
@@ -15,7 +17,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QStyle,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -28,12 +30,16 @@ QLineEdit = ParameterTextInput
 
 class BaseToolPanel(QWidget):
     step_recorded = pyqtSignal(str, dict, object, str)
+    save_requested = pyqtSignal(str, dict)
 
     use_df = True
     use_type = True
     use_out = True
     theme_color = "#2196F3"
     action_name = "未命名"
+    _COL_REF_ROLE = Qt.UserRole
+    _COL_POSITION_ROLE = Qt.UserRole + 1
+    _COL_NAME_ROLE = Qt.UserRole + 2
 
     def __init__(self, data_pool, parent=None):
         super().__init__(parent)
@@ -44,6 +50,9 @@ class BaseToolPanel(QWidget):
         self._parameter_mappings = {}
         self._resolve_params_on_get = False
         self._last_raw_params = None
+        self._panel_update_depth = 0
+        self._pending_df_summary_refresh = False
+        self._pending_col_combo_refresh = False
         self._init_base_ui()
 
     @staticmethod
@@ -130,12 +139,26 @@ class BaseToolPanel(QWidget):
             return
         if line_edit.property("_param_action_installed"):
             return
-        icon = self.style().standardIcon(QStyle.SP_FileDialogDetailedView)
-        action = QAction(icon, "引入参数", line_edit)
-        action.setToolTip("引入运行参数或映射")
+        action = QAction(self._parameter_action_icon(), "引用参数", line_edit)
+        action.setToolTip("引用运行参数或映射")
         action.triggered.connect(lambda checked=False, le=line_edit: self._show_parameter_menu(le))
         line_edit.addAction(action, QLineEdit.TrailingPosition)
         line_edit.setProperty("_param_action_installed", True)
+
+    def _parameter_action_icon(self):
+        pixmap = QPixmap(18, 18)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#E3F2FD"))
+        painter.drawRoundedRect(1, 1, 16, 16, 5, 5)
+        painter.setPen(QColor("#0D47A1"))
+        font = QFont("Arial", 7, QFont.Bold)
+        painter.setFont(font)
+        painter.drawText(pixmap.rect(), Qt.AlignCenter, "fx")
+        painter.end()
+        return QIcon(pixmap)
 
     def _insert_text_at_cursor(self, line_edit, text):
         if hasattr(line_edit, "insert_text"):
@@ -148,39 +171,50 @@ class BaseToolPanel(QWidget):
         line_edit.setFocus()
 
     def _show_parameter_menu(self, line_edit):
+        menu = self._build_parameter_menu(line_edit)
+        menu.exec_(line_edit.mapToGlobal(line_edit.rect().bottomRight()))
+
+    def _build_parameter_menu(self, line_edit):
         menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: white; border: 1px solid #CBD5E1; border-radius: 6px; }
+            QMenu::item { padding: 7px 18px; font-size: 12px; }
+            QMenu::item:selected { background: #E3F2FD; color: #0D47A1; }
+            QMenu::separator { height: 1px; background: #E5EAF0; margin: 4px 8px; }
+        """)
         params = sorted((self._runtime_parameters or {}).keys())
         mappings = sorted((self._parameter_mappings or {}).keys())
 
         if params:
-            param_menu = menu.addMenu("插入参数")
             for name in params:
-                param_menu.addAction(
-                    name,
+                action = menu.addAction(name)
+                action.setToolTip("插入 ${" + name + "}")
+                action.triggered.connect(
                     lambda checked=False, n=name: self._insert_text_at_cursor(
                         line_edit, "${" + n + "}"
-                    ),
+                    )
                 )
         else:
             action = menu.addAction("暂无可用参数")
             action.setEnabled(False)
 
         if params and mappings:
-            mapped_menu = menu.addMenu("插入参数映射")
+            menu.addSeparator()
             for mapping_name in mappings:
-                sub = mapped_menu.addMenu(mapping_name)
                 for param_name in params:
-                    sub.addAction(
-                        param_name,
+                    label = f"{param_name}（映射）" if param_name == mapping_name else f"{param_name} → {mapping_name}"
+                    action = menu.addAction(label)
+                    action.setToolTip("插入 ${" + param_name + "|map:" + mapping_name + "}")
+                    action.triggered.connect(
                         lambda checked=False, p=param_name, m=mapping_name: self._insert_text_at_cursor(
                             line_edit, "${" + p + "|map:" + m + "}"
-                        ),
+                        )
                     )
         elif mappings:
-            action = menu.addAction("先定义参数后再引入映射")
+            action = menu.addAction("先定义参数后再引用映射")
             action.setEnabled(False)
 
-        menu.exec_(line_edit.mapToGlobal(line_edit.rect().bottomRight()))
+        return menu
 
     def _make_card(self, title=""):
         card = QFrame()
@@ -227,6 +261,25 @@ class BaseToolPanel(QWidget):
         card_layout.addLayout(inner)
         return card, inner
 
+    def _make_add_button(self, text):
+        btn = QPushButton(text)
+        btn.setObjectName("add_rule_button")
+        btn.setFixedHeight(34)
+        return btn
+
+    def _make_delete_button(self):
+        btn = QPushButton("×")
+        btn.setObjectName("mini_delete")
+        btn.setToolTip("删除")
+        return btn
+
+    def _make_hint_label(self, text):
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setObjectName("panel_hint_text")
+        label.setStyleSheet("color: #64748B; font-size: 11px; border: none;")
+        return label
+
     def _init_base_ui(self):
         soft_theme = self._mix_hex_color(self.theme_color, "#FFFFFF", 0.90)
         softer_theme = self._mix_hex_color(self.theme_color, "#FFFFFF", 0.96)
@@ -236,12 +289,15 @@ class BaseToolPanel(QWidget):
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setFrameShape(QScrollArea.NoFrame)
         self.scroll_area.setStyleSheet(
             "QScrollArea { background-color: transparent; border: none; }"
         )
 
         self.content_widget = QWidget()
+        self.content_widget.setMinimumWidth(0)
+        self.content_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.content_widget.setStyleSheet(
             "background: #F3F6FA;"
         )
@@ -336,6 +392,30 @@ class BaseToolPanel(QWidget):
                 background: #F8FAFC;
                 border-color: #94A3B8;
             }}
+            QPushButton#add_rule_button {{
+                background: #F8FAFC;
+                border: 1px dashed #CBD5E1;
+                color: #334155;
+                font-size: 12px;
+            }}
+            QPushButton#add_rule_button:hover {{
+                background: #EEF2F6;
+                border-color: #94A3B8;
+            }}
+            QPushButton#mini_delete {{
+                min-width: 26px;
+                max-width: 26px;
+                min-height: 26px;
+                max-height: 26px;
+                padding: 0;
+                border-radius: 6px;
+                color: #94A3B8;
+            }}
+            QPushButton#mini_delete:hover {{
+                background: #FFF5F5;
+                border-color: #FCA5A5;
+                color: #B91C1C;
+            }}
             QPushButton#primary_execute {{
                 background-color: {self.theme_color};
                 color: white;
@@ -346,6 +426,19 @@ class BaseToolPanel(QWidget):
                 border: none;
             }}
             QPushButton#primary_execute:hover {{ background-color: {self.theme_color}; }}
+            QPushButton#secondary_save {{
+                background-color: #FFFFFF;
+                color: #334155;
+                min-height: 40px;
+                font-weight: 600;
+                border-radius: 8px;
+                font-size: 13px;
+                border: 1px solid #CBD5E1;
+            }}
+            QPushButton#secondary_save:hover {{
+                background-color: #F8FAFC;
+                border-color: #94A3B8;
+            }}
             QScrollBar:vertical {{
                 width: 10px;
                 background: transparent;
@@ -380,14 +473,16 @@ class BaseToolPanel(QWidget):
         self.panel_hint = QLabel("参数配置")
         self.panel_hint.setObjectName("panel_hint")
         title_stack.addWidget(self.panel_title)
+        title_stack.addWidget(self.panel_hint)
         self.panel_badge = QLabel(self.action_name)
         self.panel_badge.setObjectName("panel_badge")
         header_layout.addLayout(title_stack, stretch=1)
-        self.panel_hint.hide()
         self.panel_badge.hide()
         self.main_layout.addWidget(self.panel_header)
 
         self.top_form = QFormLayout()
+        self.top_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.top_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.top_form.setHorizontalSpacing(12)
         self.top_form.setVerticalSpacing(8)
         self.top_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -409,6 +504,7 @@ class BaseToolPanel(QWidget):
         if self.use_type:
             self.type_combo = QComboBox()
             self.type_combo.addItems(["列名", "字母", "索引"])
+            self.type_combo.currentTextChanged.connect(self._refresh_col_combos)
             self.top_form.addRow("匹配模式:", self.type_combo)
 
         self.custom_layout = QVBoxLayout()
@@ -417,6 +513,8 @@ class BaseToolPanel(QWidget):
         self.init_custom_ui()
 
         self.bottom_form = QFormLayout()
+        self.bottom_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        self.bottom_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.bottom_form.setHorizontalSpacing(12)
         self.bottom_form.setVerticalSpacing(8)
         self.bottom_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -438,22 +536,33 @@ class BaseToolPanel(QWidget):
 
         btn_layout = QVBoxLayout()
         btn_layout.setContentsMargins(12, 8, 12, 12)
-        btn = QPushButton(f"单步执行并更新")
-        btn.setObjectName("primary_execute")
-        btn.setStyleSheet(
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(8)
+        btn_save = QPushButton("应用配置")
+        btn_save.setObjectName("secondary_save")
+        btn_save.clicked.connect(self._on_save_config)
+        btn_run = QPushButton("运行当前节点")
+        btn_run.setObjectName("primary_execute")
+        btn_run.setStyleSheet(
             f"QPushButton {{ background-color: {self.theme_color}; color: white; "
             f"height: 40px; font-weight: bold; border-radius: 8px; font-size: 13px; "
             f"border: none; }}"
             f"QPushButton:hover {{ background-color: {self.theme_color}; opacity: 0.85; }}"
         )
-        btn.clicked.connect(self._on_execute)
-        btn_layout.addWidget(btn)
+        btn_run.clicked.connect(self._on_execute)
+        action_row.addWidget(btn_save, stretch=1)
+        action_row.addWidget(btn_run, stretch=1)
+        btn_layout.addLayout(action_row)
 
         outer_layout.addLayout(btn_layout)
+        self._refresh_df_summary()
         self._install_child_filters(self)
         self._install_parameter_actions()
 
     def _on_execute(self):
+        if not self._emit_save_requested(show_error=True):
+            return
         ok, _ = self._validate()
         if not ok:
             return
@@ -466,33 +575,83 @@ class BaseToolPanel(QWidget):
         finally:
             self._resolve_params_on_get = False
 
+    def _on_save_config(self):
+        self._emit_save_requested(show_error=True)
+
+    def _emit_save_requested(self, show_error=False):
+        old_resolve = self._resolve_params_on_get
+        self._resolve_params_on_get = False
+        self._last_raw_params = None
+        try:
+            params = self.get_params()
+        except Exception as exc:
+            if show_error:
+                QMessageBox.warning(self, "保存配置失败", str(exc))
+            return False
+        finally:
+            self._resolve_params_on_get = old_resolve
+        self.save_requested.emit(self._panel_action_key or self.action_name, copy.deepcopy(params))
+        return True
+
     def _on_df_combo_changed(self, *_):
         self._refresh_df_summary()
         self._refresh_col_combos()
 
+    def begin_panel_update(self):
+        self._panel_update_depth += 1
+
+    def end_panel_update(self):
+        self._panel_update_depth = max(0, self._panel_update_depth - 1)
+        if self._panel_update_depth:
+            return
+        refresh_summary = self._pending_df_summary_refresh
+        refresh_cols = self._pending_col_combo_refresh
+        self._pending_df_summary_refresh = False
+        self._pending_col_combo_refresh = False
+        if refresh_summary:
+            self._refresh_df_summary_now()
+        if refresh_cols:
+            self._refresh_col_combos_now()
+
     def _refresh_df_summary(self):
+        if self._panel_update_depth:
+            self._pending_df_summary_refresh = True
+            return
+        self._refresh_df_summary_now()
+
+    def _refresh_df_summary_now(self):
         if not hasattr(self, "df_summary"):
+            if hasattr(self, "panel_hint"):
+                self.panel_hint.setText("节点配置")
             return
         df_name = self.df_combo.currentText().strip() if hasattr(self, "df_combo") else ""
         df = self.data_pool.get(df_name) if df_name else None
         if df is None:
             self.df_summary.setText("未选择数据表")
+            if hasattr(self, "panel_hint"):
+                self.panel_hint.setText("未选择输入表")
             return
         rows, cols = df.shape
         self.df_summary.setText(f"{rows:,} 行 · {cols:,} 列")
+        if hasattr(self, "panel_hint"):
+            self.panel_hint.setText(f"输入: {df_name} · {rows:,} 行 · {cols:,} 列")
 
     def set_params(self, p):
-        if self.use_df and "df_name" in p:
-            self.df_combo.setCurrentText(p["df_name"])
-            self._refresh_df_summary()
-        if self.use_type:
-            _type_map = {"col_name": "列名", "col_word": "字母", "col_index": "索引"}
-            ct = p.get("col_type", "")
-            if ct in _type_map:
-                self.type_combo.setCurrentText(_type_map[ct])
-        if self.use_out and "out_name" in p:
-            self.out_input.setText(p["out_name"])
-        self.set_custom_params(p)
+        self.begin_panel_update()
+        try:
+            if self.use_df and "df_name" in p:
+                self.df_combo.setCurrentText(p["df_name"])
+                self._refresh_df_summary()
+            if self.use_type:
+                _type_map = {"col_name": "列名", "col_word": "字母", "col_index": "索引"}
+                ct = p.get("col_type", "")
+                if ct in _type_map:
+                    self.type_combo.setCurrentText(_type_map[ct])
+            if self.use_out and "out_name" in p:
+                self.out_input.setText(p["out_name"])
+            self.set_custom_params(p)
+        finally:
+            self.end_panel_update()
 
     def get_params(self):
         p = {}
@@ -515,9 +674,13 @@ class BaseToolPanel(QWidget):
         return p
 
     def clear_ui(self):
-        if self.use_out:
-            self.out_input.clear()
-        self.clear_custom_ui()
+        self.begin_panel_update()
+        try:
+            if self.use_out:
+                self.out_input.clear()
+            self.clear_custom_ui()
+        finally:
+            self.end_panel_update()
 
     def _set_combo_by_prefix(self, combo, prefix):
         if not prefix:
@@ -526,15 +689,131 @@ class BaseToolPanel(QWidget):
             if combo.itemText(i).startswith(prefix):
                 return combo.setCurrentIndex(i)
 
+    def _current_col_type(self):
+        if not self.use_type or not hasattr(self, "type_combo"):
+            return "col_name"
+        _type_map = {"列名": "col_name", "字母": "col_word", "索引": "col_index"}
+        return _type_map.get(self.type_combo.currentText(), "col_name")
+
+    @staticmethod
+    def _index_to_excel_col(index):
+        index = int(index) + 1
+        letters = []
+        while index > 0:
+            index, remainder = divmod(index - 1, 26)
+            letters.append(chr(65 + remainder))
+        return "".join(reversed(letters))
+
+    def _column_ref_for_mode(self, position, column, col_type=None):
+        col_type = col_type or self._current_col_type()
+        if col_type == "col_word":
+            return self._index_to_excel_col(position)
+        if col_type == "col_index":
+            return str(position)
+        return stringify_column_name(column)
+
+    def _col_combo_selection_snapshot(self, combo):
+        text = combo.currentText().strip()
+        row = combo.currentIndex()
+        ref = text
+        position = None
+        if row >= 0 and text == combo.itemText(row).strip():
+            data = combo.itemData(row, self._COL_REF_ROLE)
+            if data is not None:
+                ref = str(data).strip()
+            stored_position = combo.itemData(row, self._COL_POSITION_ROLE)
+            try:
+                position = int(stored_position)
+            except (TypeError, ValueError):
+                position = None
+        old_mode = combo.property("_col_display_type") or self._current_col_type()
+        return text, ref, position, old_mode
+
+    def _find_col_combo_item(self, combo, value, role):
+        if value is None:
+            return -1
+        target = str(value).strip()
+        for i in range(combo.count()):
+            data = combo.itemData(i, role)
+            if data is not None and str(data).strip() == target:
+                return i
+        return -1
+
+    def _find_col_combo_position(self, combo, position):
+        if position is None:
+            return -1
+        for i in range(combo.count()):
+            try:
+                if int(combo.itemData(i, self._COL_POSITION_ROLE)) == int(position):
+                    return i
+            except (TypeError, ValueError):
+                continue
+        return -1
+
+    def _populate_col_combo(self, combo, col_items):
+        old_text, old_ref, old_position, old_mode = self._col_combo_selection_snapshot(combo)
+        new_mode = self._current_col_type()
+
+        combo.blockSignals(True)
+        combo.clear()
+        for position, column in col_items:
+            display = self._column_ref_for_mode(position, column, new_mode)
+            name = stringify_column_name(column)
+            combo.addItem(display, userData=display)
+            item_index = combo.count() - 1
+            combo.setItemData(item_index, int(position), self._COL_POSITION_ROLE)
+            combo.setItemData(item_index, name, self._COL_NAME_ROLE)
+            combo.setItemData(
+                item_index,
+                f"column: {name}\nletter: {self._index_to_excel_col(position)}\nindex: {position}",
+                Qt.ToolTipRole,
+            )
+        combo.setProperty("_col_display_type", new_mode)
+        combo.blockSignals(False)
+
+        selected = -1
+        if old_mode != new_mode:
+            selected = self._find_col_combo_position(combo, old_position)
+        if selected < 0:
+            selected = self._find_col_combo_item(combo, old_ref, self._COL_REF_ROLE)
+        if selected < 0:
+            selected = combo.findText(old_text)
+        if selected < 0:
+            selected = self._find_col_combo_item(combo, old_ref, self._COL_NAME_ROLE)
+        if selected < 0:
+            selected = self._find_col_combo_position(combo, old_position)
+
+        if selected >= 0:
+            combo.setCurrentIndex(selected)
+        elif old_text:
+            combo.setCurrentText(old_text)
+
     def _get_col_name(self, combo):
-        """从下拉框提取列名"""
-        return combo.currentText().strip()
+        """Return the column reference used by the current matching mode."""
+        if combo is None:
+            return ""
+        text = combo.currentText().strip()
+        row = combo.currentIndex()
+        if row >= 0 and text == combo.itemText(row).strip():
+            data = combo.itemData(row, self._COL_REF_ROLE)
+            if data is not None:
+                return str(data).strip()
+        return text
 
     def _set_col_name(self, combo, name):
-        """设置下拉框为指定列名"""
-        if not name:
+        """Set a column combo by stored reference, display text, or source name."""
+        if combo is None or name is None or name == "":
             return
-        combo.setCurrentText(str(name))
+        target = str(name).strip()
+        idx = self._find_col_combo_item(combo, target, self._COL_REF_ROLE)
+        if idx < 0:
+            idx = combo.findText(target)
+        if idx < 0:
+            idx = self._find_col_combo_item(combo, target, self._COL_NAME_ROLE)
+        if idx >= 0:
+            combo.setCurrentIndex(idx)
+        else:
+            combo.setCurrentText(target)
 
     def _show_field_error(self, widget, show):
         """显示/清除字段错误状态（红色边框）"""
@@ -579,7 +858,7 @@ class BaseToolPanel(QWidget):
         cl.setSpacing(0)
 
         # header bar
-        header_btn = QPushButton(f" ▾ {summary}" if summary else " ▾ 规则")
+        header_btn = QPushButton(f" ▾ {summary}" if summary else " ▾ 规则", container)
         header_btn.setFixedHeight(34)
         header_btn.setCursor(Qt.PointingHandCursor)
         header_btn.setStyleSheet(
@@ -591,10 +870,10 @@ class BaseToolPanel(QWidget):
         cl.addWidget(header_btn)
 
         # body
-        body = QWidget()
-        body.setVisible(True)
+        body = QWidget(container)
         body.setStyleSheet("QWidget { background: #FFFFFF; border: none; }")
         cl.addWidget(body)
+        body.setVisible(True)
 
         header_btn.clicked.connect(
             lambda: self._toggle_rule_body(header_btn, body)
@@ -615,16 +894,64 @@ class BaseToolPanel(QWidget):
 
     def _inline_label(self, text):
         label = QLabel(text)
-        label.setFixedWidth(34)
+        label.setFixedWidth(32)
         label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         label.setStyleSheet("color: #64748B; font-size: 11px; border: none;")
         return label
 
+    def _forget_col_combos_under(self, widget):
+        if not hasattr(self, "_col_combos") or widget is None:
+            return
+        dead_combos = set(widget.findChildren(QComboBox))
+        if isinstance(widget, QComboBox):
+            dead_combos.add(widget)
+        valid_combos = []
+        for combo in self._col_combos:
+            try:
+                if combo not in dead_combos:
+                    valid_combos.append(combo)
+            except RuntimeError:
+                pass
+        self._col_combos = valid_combos
+        if hasattr(self, "_col_combo_filters"):
+            self._col_combo_filters = {
+                combo: dtype_filter
+                for combo, dtype_filter in self._col_combo_filters.items()
+                if combo in valid_combos
+            }
+
+    def _remove_child_filters(self, widget):
+        try:
+            widget.removeEventFilter(self)
+        except Exception:
+            pass
+        for child in widget.findChildren(QWidget):
+            try:
+                child.removeEventFilter(self)
+            except Exception:
+                pass
+
+    def remove_dynamic_row(self, row):
+        if row is None:
+            return
+        self._forget_col_combos_under(row)
+        self._remove_child_filters(row)
+        parent = row.parentWidget()
+        if parent and parent.layout():
+            parent.layout().removeWidget(row)
+        row.hide()
+        row.deleteLater()
+
     def clear_dynamic_layout(self, layout):
         while layout.count():
             item = layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            widget = item.widget()
+            if widget:
+                self.remove_dynamic_row(widget)
+                continue
+            child_layout = item.layout()
+            if child_layout:
+                self.clear_dynamic_layout(child_layout)
 
     def _make_col_combo(self, placeholder="选择列", dtype_filter=None):
         """创建可编辑的列名下拉框。dtype_filter: 'numeric'/'datetime'/'string'/None(全部)"""
@@ -633,7 +960,7 @@ class BaseToolPanel(QWidget):
         combo.setPlaceholderText(placeholder)
         if combo.lineEdit():
             combo.lineEdit().setPlaceholderText(placeholder)
-        combo.setMinimumWidth(110)
+        combo.setMinimumWidth(96)
         combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         if not hasattr(self, "_col_combos"):
             self._col_combos = []
@@ -661,19 +988,20 @@ class BaseToolPanel(QWidget):
 
     def _refresh_col_combos(self):
         """根据当前选中的 DataFrame 刷新所有列名下拉框"""
+        if self._panel_update_depth:
+            self._pending_col_combo_refresh = True
+            return
+        self._refresh_col_combos_now()
+
+    def _refresh_col_combos_from_df(self, df):
         if not hasattr(self, "_col_combos"):
             return
-        df_name = self.df_combo.currentText() if self.use_df else ""
-        df = self.data_pool.get(df_name) if df_name else None
-        all_cols = list(df.columns) if df is not None else []
-
-        # 按 dtype_filter 缓存列分组，避免同一过滤条件重复扫描
+        all_items = list(enumerate(df.columns)) if df is not None else []
         filtered_cache = {}
-
         valid_combos = []
         for combo in self._col_combos:
             try:
-                cur = combo.currentText()
+                combo.currentText()
             except RuntimeError:
                 continue
             valid_combos.append(combo)
@@ -682,23 +1010,16 @@ class BaseToolPanel(QWidget):
             if dtype_filter and df is not None:
                 if dtype_filter not in filtered_cache:
                     filtered_cache[dtype_filter] = [
-                        c for c in all_cols if self._col_matches_dtype(df[c], dtype_filter)
+                        (position, column)
+                        for position, column in all_items
+                        if self._col_matches_dtype(df.iloc[:, position], dtype_filter)
                     ]
-                cols = filtered_cache[dtype_filter]
+                col_items = filtered_cache[dtype_filter]
             else:
-                cols = all_cols
+                col_items = all_items
 
-            combo.blockSignals(True)
-            combo.clear()
-            if cols:
-                combo.addItems(cols)
-            combo.blockSignals(False)
-            if cur:
-                idx = combo.findData(cur)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                else:
-                    combo.setCurrentText(cur)
+            self._populate_col_combo(combo, col_items)
+
         self._col_combos = valid_combos
         if hasattr(self, "_col_combo_filters"):
             self._col_combo_filters = {
@@ -706,17 +1027,31 @@ class BaseToolPanel(QWidget):
                 if cb in valid_combos
             }
 
+    def _refresh_col_combos_now(self):
+        """根据当前选中的 DataFrame 刷新所有列名下拉框"""
+        if not hasattr(self, "_col_combos"):
+            return
+        df_name = self.df_combo.currentText() if self.use_df else ""
+        df = self.data_pool.get(df_name) if df_name else None
+        self._refresh_col_combos_from_df(df)
+
     def update_combos(self, table_names):
-        for combo in self.combo_boxes_to_update:
-            current = combo.currentText()
-            combo.clear()
-            combo.addItems(table_names)
-            if current in table_names:
-                combo.setCurrentText(current)
-            elif combo.count() > 0:
-                combo.setCurrentIndex(0)
-        self._refresh_df_summary()
-        self._refresh_col_combos()
+        self.begin_panel_update()
+        try:
+            for combo in self.combo_boxes_to_update:
+                current = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItems(table_names)
+                if current in table_names:
+                    combo.setCurrentText(current)
+                elif combo.count() > 0:
+                    combo.setCurrentIndex(0)
+                combo.blockSignals(False)
+            self._refresh_df_summary()
+            self._refresh_col_combos()
+        finally:
+            self.end_panel_update()
 
     def init_custom_ui(self):
         pass
@@ -732,5 +1067,3 @@ class BaseToolPanel(QWidget):
 
     def execute(self):
         pass
-
-

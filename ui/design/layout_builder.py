@@ -4,7 +4,6 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
     QDockWidget,
     QHBoxLayout,
     QLabel,
@@ -17,15 +16,19 @@ from PyQt5.QtWidgets import (
 
 from node_editor import NodeCanvasScene, NodeCanvasView
 from operator_registry import NODE_REGISTRY
-from ui.design.config_pages import make_empty_config_page, make_legacy_operator_page
+from ui.design.config_pages import make_empty_config_page
 from ui.design.toolbox import ToolboxWidget
 
 
 def build_dock_workspace(owner):
     owner.dock_main = QMainWindow()
     owner.dock_main.setStyleSheet(
-        "QMainWindow::separator { width: 3px; background: #DDD; }"
-        "QMainWindow::separator:hover { background: #AAA; }"
+        "QMainWindow::separator { width: 3px; height: 3px; background: #D8DEE6; }"
+        "QMainWindow::separator:hover { background: #AEB8C2; }"
+        "QDockWidget { titlebar-close-icon: none; titlebar-normal-icon: none; }"
+        "QDockWidget::title { text-align: left; padding: 4px 8px; "
+        "background: #F8FAFC; border-bottom: 1px solid #DCE3EA; "
+        "font-size: 12px; font-weight: 600; color: #1F2933; }"
     )
     owner.dock_main.setDockNestingEnabled(True)
     owner.dock_main.setTabPosition(
@@ -53,6 +56,7 @@ def _build_canvas(owner):
     owner.canvas_scene.edge_changed.connect(owner._on_edge_changed)
 
     owner.canvas_view = NodeCanvasView(owner.canvas_scene)
+    owner.canvas_view.copy_requested = owner.copy_selected_nodes
     canvas_layout.addWidget(owner.canvas_view)
     QTimer.singleShot(0, owner.canvas_view.center_on_canvas)
 
@@ -119,30 +123,32 @@ def _build_preview_dock(owner):
     owner.dock_preview = QDockWidget("数据预览")
     owner.dock_preview.setObjectName("dock_preview")
     owner.dock_preview.setWidget(right_panel)
+    owner.dock_preview.setMinimumHeight(180)
     owner.dock_preview.setFeatures(
         QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable
     )
     owner.dock_preview.topLevelChanged.connect(
         lambda floating, dock=owner.dock_preview: owner._on_dock_float_changed(dock, floating)
     )
-    owner.dock_main.addDockWidget(Qt.RightDockWidgetArea, owner.dock_preview)
+    owner.dock_main.addDockWidget(Qt.BottomDockWidgetArea, owner.dock_preview)
 
 
 def build_config_dialog(owner):
-    owner.config_dialog = QDialog(owner)
-    owner.config_dialog.setWindowFlags(Qt.Dialog | Qt.WindowCloseButtonHint)
-    owner.config_dialog.setWindowTitle("算子配置")
-    owner.config_dialog.setMinimumSize(620, 560)
-    owner.config_dialog.resize(660, 640)
-    owner.config_dialog.setStyleSheet("""
-        QDialog { background: #F3F6FA; border: 1px solid #D8E0EA; border-radius: 8px; }
+    owner.dock_config = QDockWidget("算子配置")
+    owner.dock_config.setObjectName("dock_config")
+    owner.dock_config.setMinimumWidth(320)
+    owner.dock_config.setAllowedAreas(Qt.RightDockWidgetArea)
+    owner.dock_config.setFeatures(QDockWidget.DockWidgetMovable)
+    owner.config_dialog = owner.dock_config
+
+    config_container = QWidget()
+    config_container.setStyleSheet("""
+        QWidget { background: #F3F6FA; }
         QStackedWidget { background: #F3F6FA; border: none; }
     """)
-    owner.config_dialog.setAttribute(Qt.WA_TranslucentBackground, False)
-
-    dialog_layout = QVBoxLayout(owner.config_dialog)
-    dialog_layout.setContentsMargins(0, 0, 0, 0)
-    dialog_layout.setSpacing(0)
+    config_layout = QVBoxLayout(config_container)
+    config_layout.setContentsMargins(0, 0, 0, 0)
+    config_layout.setSpacing(0)
 
     owner.config_area = QStackedWidget()
     owner.panel_instances = {}
@@ -150,6 +156,7 @@ def build_config_dialog(owner):
     for action, config in NODE_REGISTRY.items():
         panel = config["panel_class"](owner.ctx.data_pool)
         panel.set_runtime_parameters(owner.runtime_parameters, owner.parameter_mappings)
+        panel.save_requested.connect(owner.on_tool_saved)
         panel.step_recorded.connect(owner.on_tool_executed)
         owner.config_area.addWidget(panel)
         owner.panel_instances[action] = panel
@@ -158,9 +165,20 @@ def build_config_dialog(owner):
     owner.config_area.addWidget(owner.panel_empty)
     owner.panel_instances["sys_empty"] = owner.panel_empty
 
-    owner.panel_legacy, owner.legacy_lbl, owner.legacy_hint = make_legacy_operator_page()
-    owner.config_area.addWidget(owner.panel_legacy)
-    owner.panel_instances["sys_legacy"] = owner.panel_legacy
+    owner.config_area.setCurrentWidget(owner.panel_empty)
+    config_layout.addWidget(owner.config_area)
+    owner.dock_config.setWidget(config_container)
+    owner.dock_main.addDockWidget(Qt.RightDockWidgetArea, owner.dock_config)
+    owner._all_docks = [owner.dock_toolbox, owner.dock_config, owner.dock_preview]
 
-    dialog_layout.addWidget(owner.config_area)
-    return owner.config_dialog
+    QTimer.singleShot(
+        0,
+        lambda: owner.dock_main.resizeDocks(
+            [owner.dock_toolbox, owner.dock_config], [240, 360], Qt.Horizontal
+        ),
+    )
+    QTimer.singleShot(
+        0,
+        lambda: owner.dock_main.resizeDocks([owner.dock_preview], [220], Qt.Vertical),
+    )
+    return owner.dock_config

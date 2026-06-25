@@ -59,12 +59,7 @@ class ExtractPanel(BaseToolPanel):
         self.rules_layout.setSpacing(4)
         inner.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加提取列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E0F2F1; border: 1px dashed #80CBC4; "
-            "border-radius: 4px; padding: 6px; color: #00695C; font-size: 12px; }"
-            "QPushButton:hover { background: #B2DFDB; }"
-        )
+        btn_add = self._make_add_button("+ 添加提取列")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
 
@@ -77,17 +72,17 @@ class ExtractPanel(BaseToolPanel):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(6)
         col_combo = self._make_col_combo("选择列")
         col_combo.setObjectName("col")
         self._set_col_name(col_combo, str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("重命名(可选)")
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
-        l.addWidget(r_input)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
+        l.addWidget(r_input, stretch=1)
         l.addWidget(btn_rm)
         self.rules_layout.addWidget(row)
 
@@ -160,18 +155,13 @@ class FilterPanel(BaseToolPanel):
         self.logic_combo.addItems(["AND (满足所有)", "OR (满足其一)"])
         self.top_form.addRow("条件逻辑:", self.logic_combo)
 
-        card, inner = self._make_card("筛选条件")
+        card, inner = self._make_card("规则配置")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
-        self.rules_layout.setSpacing(4)
+        self.rules_layout.setSpacing(6)
         inner.addLayout(self.rules_layout)
         self.add_rule()
-        btn_add = QPushButton("+ 添加筛选条件")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #FCE4EC; border: 1px dashed #F48FB1; "
-            "border-radius: 4px; padding: 6px; color: #880E4F; font-size: 12px; }"
-            "QPushButton:hover { background: #F8BBD0; }"
-        )
+        btn_add = self._make_add_button("+ 添加筛选条件")
         btn_add.clicked.connect(lambda: self.add_rule())
         inner.addWidget(btn_add)
 
@@ -183,23 +173,35 @@ class FilterPanel(BaseToolPanel):
         summary = f"{col or '?'} {op} {val}" if col or val else "新筛选条件"
         container, header_btn, body = self._make_collapsible_rule(summary)
 
-        body_layout = QHBoxLayout(body)
-        body_layout.setContentsMargins(8, 8, 8, 8)
-        body_layout.setSpacing(6)
-        body_layout.addWidget(self._inline_label("列"))
+        body.setObjectName("rule_body")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(10, 8, 10, 10)
+        body_layout.setSpacing(8)
+        column_row = QHBoxLayout()
+        column_row.setContentsMargins(0, 0, 0, 0)
+        column_row.setSpacing(6)
+        column_row.addWidget(self._inline_label("列"))
         col_combo = self._make_col_combo("排查列")
         col_combo.setObjectName("col")
-        col_combo.setMinimumWidth(150)
         self._set_col_name(col_combo, str(col))
         col_combo.currentTextChanged.connect(
             lambda: self._update_filter_summary(container, header_btn)
         )
-        body_layout.addWidget(col_combo, stretch=2)
-        body_layout.addWidget(self._inline_label("条件"))
+        column_row.addWidget(col_combo, stretch=1)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=container: self.remove_dynamic_row(r))
+        column_row.addWidget(btn_rm)
+        body_layout.addLayout(column_row)
+
+        condition_row = QHBoxLayout()
+        condition_row.setContentsMargins(0, 0, 0, 0)
+        condition_row.setSpacing(6)
+        condition_row.addWidget(self._inline_label("条件"))
         op_combo = QComboBox()
         op_combo.setObjectName("op")
         op_combo.addItems(list(self.OP_MAP.keys()))
-        op_combo.setMinimumWidth(96)
+        op_combo.setMinimumWidth(88)
+        op_combo.setMaximumWidth(118)
         if op in self.OP_MAP:
             op_combo.setCurrentText(op)
         elif op in self.OP_REV:
@@ -207,22 +209,16 @@ class FilterPanel(BaseToolPanel):
         op_combo.currentTextChanged.connect(
             lambda: self._update_filter_summary(container, header_btn)
         )
-        body_layout.addWidget(op_combo)
-        body_layout.addWidget(self._inline_label("值"))
+        condition_row.addWidget(op_combo)
+        condition_row.addWidget(self._inline_label("值"))
         v_input = QLineEdit(str(val))
         v_input.setObjectName("val")
         v_input.setPlaceholderText("目标值")
         v_input.textChanged.connect(
             lambda: self._update_filter_summary(container, header_btn)
         )
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(container.deleteLater)
-        body_layout.addWidget(v_input, stretch=1)
-        body_layout.addWidget(btn_rm)
-
-        # assign objectNames to body widgets too for get_custom_params
-        body.setObjectName("rule_body")
+        condition_row.addWidget(v_input, stretch=1)
+        body_layout.addLayout(condition_row)
 
         self.rules_layout.addWidget(container)
 
@@ -282,22 +278,16 @@ class SortPanel(BaseToolPanel):
     action_name = "排序"
 
     def init_custom_ui(self):
-        card, inner = self._make_card("排序规则 (从上到下优先级递减)")
+        card, inner = self._make_card("规则配置")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
-        self.rules_layout.setSpacing(4)
+        self.rules_layout.setSpacing(6)
         inner.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加排序规则")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #FFF3E0; border: 1px dashed #FFB74D; "
-            "border-radius: 4px; padding: 6px; color: #E65100; font-size: 12px; }"
-            "QPushButton:hover { background: #FFE0B2; }"
-        )
+        btn_add = self._make_add_button("+ 添加排序规则")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
-        hint = QLabel("升序(从小到大), 降序(从大到小), 自定义(手写词典如: 高,中,低)")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("升序从小到大，降序从大到小；自定义用于高、中、低等业务顺序。")
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -307,24 +297,44 @@ class SortPanel(BaseToolPanel):
     def add_rule_row(self, col="", asc=True, custom_order=None):
         if custom_order is None:
             custom_order = []
-        container = QWidget()
-        v = QVBoxLayout(container)
-        v.setContentsMargins(0, 0, 0, 8)
+        order_text = "自定义" if custom_order else ("升序" if asc else "降序")
+        summary = f"{col or '?'} · {order_text}" if col else "新排序规则"
+        container, header_btn, body = self._make_collapsible_rule(summary)
+        body.setObjectName("rule_body")
+        v = QVBoxLayout(body)
+        v.setContentsMargins(10, 8, 10, 10)
+        v.setSpacing(8)
         h = QHBoxLayout()
         h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
         col_combo = self._make_col_combo("排序列")
         col_combo.setObjectName("col")
         self._set_col_name(col_combo, str(col))
+        col_combo.currentTextChanged.connect(
+            lambda: self._update_sort_summary(container, header_btn)
+        )
         asc_combo = QComboBox()
         asc_combo.setObjectName("asc")
         asc_combo.addItems(["升序", "降序", "自定义"])
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(container.deleteLater)
-        h.addWidget(col_combo)
-        h.addWidget(asc_combo)
+        asc_combo.setMinimumWidth(88)
+        asc_combo.setMaximumWidth(112)
+        asc_combo.currentTextChanged.connect(
+            lambda: self._update_sort_summary(container, header_btn)
+        )
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=container: self.remove_dynamic_row(r))
+        h.addWidget(self._inline_label("列"))
+        h.addWidget(col_combo, stretch=1)
         h.addWidget(btn_rm)
         v.addLayout(h)
+
+        order_row = QHBoxLayout()
+        order_row.setContentsMargins(0, 0, 0, 0)
+        order_row.setSpacing(6)
+        order_row.addWidget(self._inline_label("顺序"))
+        order_row.addWidget(asc_combo)
+        order_row.addStretch(1)
+        v.addLayout(order_row)
 
         # 自定义排序区域（动态行）
         cus_area = QWidget()
@@ -341,9 +351,8 @@ class SortPanel(BaseToolPanel):
             inp.setObjectName("custom_val")
             inp.setPlaceholderText("排序值")
             inp.setMinimumWidth(80)
-            rm = QPushButton("×")
-            rm.setFixedWidth(22)
-            rm.clicked.connect(cr.deleteLater)
+            rm = self._make_delete_button()
+            rm.clicked.connect(lambda checked=False, r=cr: self.remove_dynamic_row(r))
             rl.addWidget(inp)
             rl.addWidget(rm)
             rl.addStretch()
@@ -352,16 +361,10 @@ class SortPanel(BaseToolPanel):
         for val in custom_order:
             _add_cus_row(val)
 
-        btn_add_cus = QPushButton("+ 添加排序值")
-        btn_add_cus.setStyleSheet(
-            "QPushButton { background: #FFF8E1; border: 1px dashed #FFB300; "
-            "border-radius: 3px; padding: 3px 8px; font-size: 11px; color: #E65100; }"
-            "QPushButton:hover { background: #FFECB3; }"
-        )
+        btn_add_cus = self._make_add_button("+ 添加排序值")
         btn_add_cus.clicked.connect(lambda: _add_cus_row())
         cl.addWidget(btn_add_cus)
 
-        cus_area.setVisible(asc_combo.currentIndex() == 2)
         if custom_order:
             asc_combo.setCurrentIndex(2)
         else:
@@ -369,8 +372,20 @@ class SortPanel(BaseToolPanel):
         asc_combo.currentIndexChanged.connect(
             lambda idx, ca=cus_area: ca.setVisible(idx == 2)
         )
+        cus_area.setVisible(asc_combo.currentIndex() == 2)
         v.addWidget(cus_area)
         self.rules_layout.addWidget(container)
+
+    def _update_sort_summary(self, container, header_btn):
+        body = container.findChild(QWidget, "rule_body")
+        if not body:
+            return
+        col_combo = body.findChild(QComboBox, "col")
+        asc_combo = body.findChild(QComboBox, "asc")
+        col = self._get_col_name(col_combo) if col_combo else ""
+        order = asc_combo.currentText() if asc_combo else "?"
+        summary = f"{col or '?'} · {order}" if col else "新排序规则"
+        self._update_rule_summary(header_btn, summary)
 
     def set_custom_params(self, p):
         rules = p.get("sort_rules", [])
@@ -447,18 +462,13 @@ class CleanPanel(BaseToolPanel):
     ]
 
     def init_custom_ui(self):
-        card, inner = self._make_card("清洗规则 (从上到下执行)")
+        card, inner = self._make_card("规则配置")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
-        self.rules_layout.setSpacing(4)
+        self.rules_layout.setSpacing(6)
         inner.addLayout(self.rules_layout)
         self.add_rule()
-        btn_add = QPushButton("+ 添加清洗规则")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #FBE9E7; border: 1px dashed #FFAB91; "
-            "border-radius: 4px; padding: 6px; color: #BF360C; font-size: 12px; }"
-            "QPushButton:hover { background: #FFCCBC; }"
-        )
+        btn_add = self._make_add_button("+ 添加清洗规则")
         btn_add.clicked.connect(lambda: self.add_rule())
         inner.addWidget(btn_add)
 
@@ -471,34 +481,40 @@ class CleanPanel(BaseToolPanel):
         container, header_btn, body = self._make_collapsible_rule(summary)
         body.setObjectName("rule_body")
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(8, 8, 8, 8)
-        body_layout.setSpacing(4)
+        body_layout.setContentsMargins(10, 8, 10, 10)
+        body_layout.setSpacing(8)
 
-        row1 = QHBoxLayout()
-        row1.setSpacing(6)
-        row1.addWidget(self._inline_label("列"))
+        col_row = QHBoxLayout()
+        col_row.setContentsMargins(0, 0, 0, 0)
+        col_row.setSpacing(6)
+        col_row.addWidget(self._inline_label("列"))
         col_combo = self._make_col_combo("清洗列")
         col_combo.setObjectName("col")
-        col_combo.setMinimumWidth(160)
         self._set_col_name(col_combo, str(col))
         col_combo.currentTextChanged.connect(
             lambda: self._update_clean_summary(container, header_btn))
-        row1.addWidget(col_combo, stretch=2)
-        row1.addWidget(self._inline_label("操作"))
+        col_row.addWidget(col_combo, stretch=1)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=container: self.remove_dynamic_row(r))
+        col_row.addWidget(btn_rm)
+        body_layout.addLayout(col_row)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 0, 0, 0)
+        action_row.setSpacing(6)
+        action_row.addWidget(self._inline_label("操作"))
         action_combo = QComboBox()
         action_combo.setObjectName("action")
         action_combo.addItems(list(self.ACT_CN_MAP.keys()))
-        action_combo.setMinimumWidth(104)
+        action_combo.setMinimumWidth(96)
+        action_combo.setMaximumWidth(136)
         action_combo.setCurrentText(cn_action)
         action_combo.currentTextChanged.connect(
             lambda t, c=container, h=header_btn:
                 (self._update_clean_summary(c, h), self._build_clean_params(c, t)))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(container.deleteLater)
-        row1.addWidget(action_combo)
-        row1.addWidget(btn_rm)
-        body_layout.addLayout(row1)
+        action_row.addWidget(action_combo)
+        action_row.addStretch(1)
+        body_layout.addLayout(action_row)
         self._build_clean_params(container, cn_action, fill_val)
         self.rules_layout.addWidget(container)
 
@@ -506,23 +522,26 @@ class CleanPanel(BaseToolPanel):
         old = container.findChild(QWidget, "param_area")
         if old:
             container.layout().removeWidget(old)
-            old.deleteLater()
+            self.remove_dynamic_row(old)
         specs = self.ACT_PARAM_SPECS.get(cn_action)
         if not specs:
             return
         area = QWidget()
         area.setObjectName("param_area")
-        al = QHBoxLayout(area)
+        al = QVBoxLayout(area)
         al.setContentsMargins(0, 4, 0, 0)
         al.setSpacing(6)
         for obj_name, placeholder in specs:
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.setSpacing(6)
             if placeholder == "@date":
-                al.addWidget(self._inline_label("参数"))
+                row.addWidget(self._inline_label("参数"))
                 fmt_combo = QComboBox()
                 fmt_combo.setObjectName("fill")
                 for label, code in self.DATE_FORMATS:
                     fmt_combo.addItem(label, userData=code)
-                fmt_combo.setMinimumWidth(140)
+                fmt_combo.setMinimumWidth(96)
                 if fill_val:
                     idx = fmt_combo.findData(fill_val)
                     fmt_combo.setCurrentIndex(idx if idx >= 0 else len(self.DATE_FORMATS)-1)
@@ -531,7 +550,6 @@ class CleanPanel(BaseToolPanel):
                 custom_input = QLineEdit()
                 custom_input.setObjectName("fill_custom")
                 custom_input.setPlaceholderText("自定义格式...")
-                custom_input.setMinimumWidth(100)
                 custom_input.setVisible(
                     fmt_combo.currentData() == "__custom__")
                 if custom_input.isVisible() and fill_val:
@@ -539,18 +557,18 @@ class CleanPanel(BaseToolPanel):
                 fmt_combo.currentTextChanged.connect(
                     lambda t, ci=custom_input, fc=fmt_combo:
                         ci.setVisible(fc.currentData() == "__custom__"))
-                al.addWidget(fmt_combo)
-                al.addWidget(custom_input)
+                row.addWidget(fmt_combo, stretch=1)
+                row.addWidget(custom_input, stretch=1)
+                al.addLayout(row)
             else:
-                al.addWidget(self._inline_label("参数"))
+                row.addWidget(self._inline_label("参数"))
                 inp = QLineEdit()
                 inp.setObjectName("fill")
                 inp.setPlaceholderText(placeholder)
-                inp.setMinimumWidth(160)
                 if fill_val:
                     inp.setText(str(fill_val))
-                al.addWidget(inp)
-        al.addStretch()
+                row.addWidget(inp, stretch=1)
+                al.addLayout(row)
         container.layout().addWidget(area)
 
     def _update_clean_summary(self, container, header_btn):
@@ -625,12 +643,7 @@ class DedupPanel(BaseToolPanel):
         self.subset_layout.setSpacing(4)
         inner.addLayout(self.subset_layout)
         self.add_subset_row()
-        btn_add = QPushButton("+ 添加去重列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #FFEBEE; border: 1px dashed #EF9A9A; "
-            "border-radius: 4px; padding: 6px; color: #C62828; font-size: 12px; }"
-            "QPushButton:hover { background: #FFCDD2; }"
-        )
+        btn_add = self._make_add_button("+ 添加去重列")
         btn_add.clicked.connect(lambda: self.add_subset_row())
         inner.addWidget(btn_add)
 
@@ -645,10 +658,9 @@ class DedupPanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("去重列")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.subset_layout.addWidget(row)
 
@@ -719,9 +731,7 @@ class SamplePanel(BaseToolPanel):
 
         hint_card, hint_inner = self._make_card()
         self.custom_layout.addWidget(hint_card)
-        hint = QLabel("抽样从大数据集中随机抽取子集用于快速测试。种子固定时可复现相同结果。")
-        hint.setStyleSheet("color: #888; font-size: 11px; border: none;")
-        hint.setWordWrap(True)
+        hint = self._make_hint_label("抽样从大数据集中随机抽取子集用于快速测试。种子固定时可复现相同结果。")
         hint_inner.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -768,9 +778,7 @@ class TransposePanel(BaseToolPanel):
     def init_custom_ui(self):
         hint_card, hint_inner = self._make_card()
         self.custom_layout.addWidget(hint_card)
-        hint = QLabel("转置将行列互换。原列名变为第一列，原行变为列。适合需要行列翻转的场景。")
-        hint.setStyleSheet("color: #888; font-size: 11px; border: none;")
-        hint.setWordWrap(True)
+        hint = self._make_hint_label("转置将行列互换。原列名变为第一列，原行变为列。适合需要行列翻转的场景。")
         hint_inner.addWidget(hint)
 
     def clear_custom_ui(self):

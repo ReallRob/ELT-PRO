@@ -5,6 +5,10 @@ from PyQt5.QtWidgets import (
     QGraphicsPathItem,
     QMessageBox,
 )
+try:
+    from PyQt5 import sip
+except ImportError:  # pragma: no cover - depends on PyQt packaging
+    sip = None
 from PyQt5.QtCore import Qt, QRectF, QPointF, pyqtSignal
 from PyQt5.QtGui import (
     QColor,
@@ -20,27 +24,40 @@ from PyQt5.QtGui import (
 import utils
 
 
-METADATA_NODE_TYPES = ("input_param", "param_mapping", "advanced_param_mapping")
+METADATA_NODE_TYPES = ("advanced_param_mapping",)
 
 
 class NodeItem(QGraphicsItem):
-    def __init__(self, node_id, action_type, title, color="#1976D2", x=0, y=0):
+    def __init__(
+        self,
+        node_id,
+        action_type,
+        title,
+        color="#1976D2",
+        x=0,
+        y=0,
+        operator_name="",
+    ):
         super().__init__()
         self.node_id = node_id
         self.action_type = action_type
         self.title = title
         self.color = color
+        self.operator_name = operator_name or action_type
 
         # 修复显示不全：动态计算文本宽度，自适应节点大小
         font = QFont("Microsoft YaHei", 9)
         metrics = QFontMetrics(font)
-        text_width = metrics.boundingRect(self.title).width()
+        title_width = metrics.boundingRect(self.title).width()
+        op_width = QFontMetrics(QFont("Microsoft YaHei", 10, QFont.Bold)).boundingRect(
+            self.operator_name
+        ).width()
         # 保证基础宽度 160，最大不超过 350
-        self.width = min(max(160, text_width + 40), 350)
-        self.height = 60
+        self.width = min(max(170, max(title_width, op_width) + 44), 360)
+        self.height = 64
 
         # 增加悬浮提示，确保任何情况下都能看全
-        self.setToolTip(f"[{action_type}] {title}")
+        self.setToolTip(f"[{self.operator_name}] {title}")
 
         # 节点生成时自动吸附网格 (20像素对齐)
         self.setPos(round(x / 20) * 20, round(y / 20) * 20)
@@ -56,6 +73,12 @@ class NodeItem(QGraphicsItem):
         self.is_dirty = False
         self.setZValue(1)
 
+    def has_input_port(self):
+        return self.action_type not in ("load_file",) + METADATA_NODE_TYPES
+
+    def has_output_port(self):
+        return self.action_type not in ("import_template",) + METADATA_NODE_TYPES
+
     def boundingRect(self):
         return QRectF(-10, -10, self.width + 20, self.height + 20)
 
@@ -64,53 +87,68 @@ class NodeItem(QGraphicsItem):
 
         # 绘制主节点框
         if self.isSelected():
-            pen = QPen(QColor("#4CAF50"), 3)
+            pen = QPen(QColor("#0284C7"), 3)
         elif self.is_dirty:
             pen = QPen(QColor("#FFC107"), 3)
         else:
             pen = QPen(QColor(self.color), 2)
 
         painter.setPen(pen)
-        painter.setBrush(QBrush(QColor("white")))
         rect = QRectF(0, 0, self.width, self.height)
+        if self.isSelected():
+            painter.setPen(QPen(QColor(14, 165, 233, 85), 8))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(-4, -4, 4, 4), 8, 8)
+            painter.setPen(pen)
+            painter.setBrush(QBrush(QColor("#EFF6FF")))
+        else:
+            painter.setBrush(QBrush(QColor("white")))
         painter.drawRoundedRect(rect, 5, 5)
 
         # 绘制标题栏背景
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(QColor(self.color)))
-        header_rect = QRectF(0, 0, self.width, 20)
+        header_color = QColor("#0284C7") if self.isSelected() else QColor(self.color)
+        painter.setBrush(QBrush(header_color))
+        header_rect = QRectF(0, 0, self.width, 24)
         painter.drawRoundedRect(header_rect, 5, 5)
-        painter.drawRect(QRectF(0, 10, self.width, 10))
+        painter.drawRect(QRectF(0, 12, self.width, 12))
 
         # 绘制算子类型文字
         painter.setPen(QColor("white"))
-        painter.setFont(QFont("Arial", 9, QFont.Bold))
-        painter.drawText(header_rect, Qt.AlignCenter, self.action_type)
+        op_font = QFont("Microsoft YaHei", 10, QFont.Bold)
+        painter.setFont(op_font)
+        op_metrics = QFontMetrics(op_font)
+        elided_op = op_metrics.elidedText(
+            self.operator_name, Qt.ElideRight, int(self.width - 16)
+        )
+        painter.drawText(header_rect, Qt.AlignCenter, elided_op)
 
         # 绘制动态名称文字
-        painter.setPen(QColor("black"))
-        font = QFont("Microsoft YaHei", 9)
+        painter.setPen(QColor("#1F2933"))
+        font = QFont("Microsoft YaHei", 8)
         painter.setFont(font)
         metrics = QFontMetrics(font)
         elided_title = metrics.elidedText(
-            self.title, Qt.ElideRight, int(self.width - 15)
+            self.title, Qt.ElideRight, int(self.width - 18)
         )
         painter.drawText(
-            QRectF(5, 25, self.width - 10, 30),
+            QRectF(8, 28, self.width - 16, 28),
             Qt.AlignCenter,
             elided_title,
         )
 
         # 将连接引脚（端口）横向分布在左右两侧
-        painter.setBrush(QBrush(QColor("#ccc")))
-        painter.setPen(QPen(QColor("#666"), 1))
+        port_fill = QColor("#38BDF8") if self.isSelected() else QColor("#ccc")
+        port_border = QColor("#0369A1") if self.isSelected() else QColor("#666")
+        painter.setBrush(QBrush(port_fill))
+        painter.setPen(QPen(port_border, 1))
 
         # 左侧输入端口 (剔除不需要输入的源头节点)
-        if self.action_type not in ("load_file", "import_template") + METADATA_NODE_TYPES:
+        if self.has_input_port():
             painter.drawEllipse(QPointF(0, self.height / 2), 5, 5)
 
         # 右侧输出端口
-        if self.action_type not in METADATA_NODE_TYPES:
+        if self.has_output_port():
             painter.drawEllipse(QPointF(self.width, self.height / 2), 5, 5)
 
     def itemChange(self, change, value):
@@ -157,10 +195,16 @@ class EdgeItem(QGraphicsPathItem):
         painter.setRenderHint(QPainter.Antialiasing)
         if self.isSelected():
             line_color = QColor("#f44336")
-            line_width = 3
+            line_width = 4
         else:
             line_color = QColor("#999999")
             line_width = 2
+
+        if self.isSelected():
+            painter.setPen(
+                QPen(QColor(244, 67, 54, 70), 9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            )
+            painter.drawPath(self.path())
 
         painter.setPen(
             QPen(line_color, line_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
@@ -176,6 +220,15 @@ class EdgeItem(QGraphicsPathItem):
 
 
 class NodeCanvasScene(QGraphicsScene):
+    @staticmethod
+    def _is_deleted_qt_object(obj):
+        if obj is None or sip is None:
+            return False
+        try:
+            return sip.isdeleted(obj)
+        except Exception:
+            return False
+
     CANVAS_HALF_SIZE = 25000
     node_selected = pyqtSignal(object)
     node_double_clicked = pyqtSignal(object)
@@ -205,7 +258,7 @@ class NodeCanvasScene(QGraphicsScene):
 
         item = self.itemAt(event.scenePos(), self.views()[0].transform())
         if event.button() == Qt.LeftButton:
-            if isinstance(item, NodeItem) and item.action_type not in METADATA_NODE_TYPES:
+            if isinstance(item, NodeItem) and item.has_output_port():
                 if event.scenePos().x() > item.scenePos().x() + item.width - 25:
                     self.start_node = item
                     self.drawing_edge = True
@@ -216,7 +269,7 @@ class NodeCanvasScene(QGraphicsScene):
 
             if isinstance(item, NodeItem):
                 self.node_selected.emit(item)
-            else:
+            elif item is None:
                 self.node_selected.emit(None)
         super().mousePressEvent(event)
 
@@ -241,9 +294,11 @@ class NodeCanvasScene(QGraphicsScene):
     @staticmethod
     def _max_inputs(node):
         """返回节点允许的最大输入连线数"""
-        if node.action_type in ("load_file", "import_template") + METADATA_NODE_TYPES:
+        if node.action_type in ("load_file",) + METADATA_NODE_TYPES:
             return 0
-        if node.action_type in ("left_join", "concat_rows", "insert_block"):
+        if node.action_type in ("import_template", "code_block"):
+            return 10000
+        if node.action_type in ("left_join", "concat_rows"):
             return 2
         return 1
 
@@ -265,6 +320,18 @@ class NodeCanvasScene(QGraphicsScene):
                     stack.append(edge.dest_node)
         return False
 
+    def _is_semantic_edge_allowed(self, start_node, end_node):
+        if end_node.action_type == "import_template" and start_node.action_type != "insert_block":
+            QMessageBox.warning(None, "连线被拒绝", "导入模板只接收插入模板节点。")
+            return False
+        if start_node.action_type == "insert_block" and end_node.action_type != "import_template":
+            QMessageBox.warning(None, "连线被拒绝", "插入模板的右侧请连接到导入模板。")
+            return False
+        if end_node.action_type == "insert_block" and start_node.action_type == "import_template":
+            QMessageBox.warning(None, "连线被拒绝", "请改为 插入模板 -> 导入模板 的方向。")
+            return False
+        return True
+
     def mouseReleaseEvent(self, event):
         if self.drawing_edge:
             self.drawing_edge = False
@@ -274,7 +341,7 @@ class NodeCanvasScene(QGraphicsScene):
             if (
                 isinstance(end_item, NodeItem)
                 and end_item != self.start_node
-                and end_item.action_type != "load_file"
+                and end_item.has_input_port()
             ):
                 existing_edges = [
                     edge
@@ -284,6 +351,8 @@ class NodeCanvasScene(QGraphicsScene):
                 if not existing_edges:
                     if self._would_create_cycle(self.start_node, end_item):
                         QMessageBox.warning(None, "连线被拒绝", "非法操作：死循环！")
+                    elif not self._is_semantic_edge_allowed(self.start_node, end_item):
+                        pass
                     elif not self._can_accept_input(end_item):
                         QMessageBox.warning(
                             None, "连线被拒绝",
@@ -299,31 +368,47 @@ class NodeCanvasScene(QGraphicsScene):
         super().mouseReleaseEvent(event)
 
     def delete_selected_items(self):
-        for item in self.selectedItems():
+        selected = list(self.selectedItems())
+        if any(isinstance(item, NodeItem) for item in selected):
+            self.node_selected.emit(None)
+        for item in selected:
+            if self._is_deleted_qt_object(item):
+                continue
             if isinstance(item, NodeItem):
                 for edge in list(item.edges_in):
-                    if edge in edge.source_node.edges_out:
+                    if self._is_deleted_qt_object(edge):
+                        continue
+                    if not self._is_deleted_qt_object(edge.source_node) and edge in edge.source_node.edges_out:
                         edge.source_node.edges_out.remove(edge)
                     self.removeItem(edge)
                 for edge in list(item.edges_out):
-                    if edge in edge.dest_node.edges_in:
+                    if self._is_deleted_qt_object(edge):
+                        continue
+                    if not self._is_deleted_qt_object(edge.dest_node) and edge in edge.dest_node.edges_in:
                         edge.dest_node.edges_in.remove(edge)
                     self.removeItem(edge)
                 self.removeItem(item)
             elif isinstance(item, EdgeItem):
-                if item in item.source_node.edges_out:
+                if self._is_deleted_qt_object(item):
+                    continue
+                if not self._is_deleted_qt_object(item.source_node) and item in item.source_node.edges_out:
                     item.source_node.edges_out.remove(item)
-                if item.dest_node and item in item.dest_node.edges_in:
+                if (
+                    item.dest_node is not None
+                    and not self._is_deleted_qt_object(item.dest_node)
+                    and item in item.dest_node.edges_in
+                ):
                     item.dest_node.edges_in.remove(item)
                 self.removeItem(item)
         self.edge_changed.emit()
-        self.node_selected.emit(None)
 
 
 class NodeCanvasView(QGraphicsView):
     def __init__(self, scene):
         super().__init__(scene)
+        self.copy_requested = None
         self.setRenderHint(QPainter.Antialiasing)
+        self.setFocusPolicy(Qt.StrongFocus)
         self.setDragMode(QGraphicsView.NoDrag)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
@@ -331,25 +416,35 @@ class NodeCanvasView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._is_panning = False
+        self._pan_button = None
 
     def center_on_canvas(self):
         self.centerOn(QPointF(0, 0))
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.MiddleButton:
-            self._is_panning = True
-            self._pan_start_x = event.x()
-            self._pan_start_y = event.y()
-            self.setCursor(Qt.ClosedHandCursor)
-            return
-
         item = self.itemAt(event.pos())
         if item is None and event.button() == Qt.LeftButton:
-            self.setDragMode(QGraphicsView.RubberBandDrag)
+            if event.modifiers() == Qt.ShiftModifier:
+                self.setDragMode(QGraphicsView.RubberBandDrag)
+            else:
+                self.scene().clearSelection()
+                if hasattr(self.scene(), "node_selected"):
+                    self.scene().node_selected.emit(None)
+                self.setDragMode(QGraphicsView.NoDrag)
+                self._start_panning(event, Qt.LeftButton)
+                return
         else:
             self.setDragMode(QGraphicsView.NoDrag)
 
         super().mousePressEvent(event)
+
+    def _start_panning(self, event, button):
+        self._is_panning = True
+        self._pan_button = button
+        self._pan_start_x = event.x()
+        self._pan_start_y = event.y()
+        self.setCursor(Qt.ClosedHandCursor)
+        event.accept()
 
     def mouseMoveEvent(self, event):
         if self._is_panning:
@@ -359,12 +454,14 @@ class NodeCanvasView(QGraphicsView):
             self.verticalScrollBar().setValue(self.verticalScrollBar().value() - dy)
             self._pan_start_x = event.x()
             self._pan_start_y = event.y()
+            event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if event.button() == Qt.MiddleButton:
+        if self._is_panning and event.button() == self._pan_button:
             self._is_panning = False
+            self._pan_button = None
             self.setCursor(Qt.ArrowCursor)
             event.accept()
             return
@@ -375,6 +472,12 @@ class NodeCanvasView(QGraphicsView):
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Delete:
             self.scene().delete_selected_items()
+        elif event.modifiers() == Qt.ControlModifier and event.key() in (Qt.Key_C, Qt.Key_D):
+            if self.copy_requested is not None:
+                self.copy_requested()
+                event.accept()
+            else:
+                super().keyPressEvent(event)
         else:
             super().keyPressEvent(event)
 

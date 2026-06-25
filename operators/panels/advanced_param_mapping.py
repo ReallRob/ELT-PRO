@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -39,10 +40,10 @@ class AdvancedMappingDialog(QDialog):
 
     def __init__(self, field_name="", rules=None, parent=None):
         super().__init__(parent)
-        title_name = field_name or "未命名参数"
-        self.setWindowTitle(f"配置映射 - {title_name}")
-        self.resize(900, 560)
-        self.setMinimumSize(820, 460)
+        self.field_name = field_name or "参数"
+        self.setWindowTitle(f"配置映射 - {self.field_name}")
+        self.resize(900, 520)
+        self.setMinimumSize(760, 420)
         self._rules = normalize_mapping_groups(rules or [])
         self._init_ui()
 
@@ -51,7 +52,7 @@ class AdvancedMappingDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(8)
 
-        hint = QLabel("源参数固定为当前输入；映射组统一设置匹配模式和输出类型，分支只维护条件与目标值。")
+        hint = QLabel("映射名相当于函数名；当前参数作为入参，规则按顺序判断并输出目标值。")
         hint.setStyleSheet("color: #607D8B; font-size: 12px;")
         layout.addWidget(hint)
 
@@ -92,15 +93,20 @@ class AdvancedMappingDialog(QDialog):
                 border-radius: 6px;
             }
             QFrame#mapping_case_row {
-                background: #F8FAFC;
-                border: none;
-                border-bottom: 1px solid #E2E8F0;
-                border-radius: 0px;
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 6px;
             }
-            QLabel#case_header {
-                color: #64748B;
-                font-size: 11px;
+            QLabel#mapping_arrow {
+                color: #334155;
+                font-size: 14px;
                 font-weight: bold;
+            }
+            QLabel#mapping_param_label {
+                color: #0F172A;
+                font-size: 12px;
+                font-weight: bold;
+                padding: 0 2px;
             }
             QLineEdit, QComboBox {
                 min-height: 28px;
@@ -140,27 +146,38 @@ class AdvancedMappingDialog(QDialog):
                 combo.setCurrentIndex(i)
                 return
 
+    @staticmethod
+    def _remove_dynamic_row(row):
+        if row is None:
+            return
+        parent = row.parentWidget()
+        if parent and parent.layout():
+            parent.layout().removeWidget(row)
+        row.hide()
+        row.deleteLater()
+
     def add_rule_group(self, rule=None):
         rule = rule or {}
         row = QFrame()
         row.setObjectName("mapping_rule_row")
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         outer = QVBoxLayout(row)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(10, 10, 10, 10)
+        outer.setSpacing(6)
 
         line1 = QHBoxLayout()
         line1.setSpacing(8)
         name_input = QLineEdit(str(rule.get("ruleName", rule.get("rule_name", ""))))
         name_input.setObjectName("rule_name")
-        name_input.setPlaceholderText("规则命名，如 季度转月份")
+        name_input.setPlaceholderText("函数名，如 季度转月份")
         strategy = QComboBox()
         strategy.setObjectName("evaluation_strategy")
         strategy.addItem("首个命中", "first_match")
         strategy.addItem("全部命中", "all_match")
         self._set_combo_data(strategy, rule.get("evaluationStrategy", "first_match"))
         btn_rm = QPushButton("删除")
-        btn_rm.clicked.connect(row.deleteLater)
-        line1.addWidget(QLabel("映射命名:"))
+        btn_rm.clicked.connect(lambda checked=False, r=row: self._remove_dynamic_row(r))
+        line1.addWidget(QLabel("函数名:"))
         line1.addWidget(name_input, stretch=1)
         line1.addWidget(QLabel("命中策略:"))
         line1.addWidget(strategy)
@@ -169,15 +186,20 @@ class AdvancedMappingDialog(QDialog):
 
         toolbar_frame = QFrame()
         toolbar_frame.setObjectName("mapping_group_toolbar")
+        toolbar_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        toolbar_frame.setMaximumHeight(42)
         toolbar = QHBoxLayout(toolbar_frame)
-        toolbar.setContentsMargins(10, 8, 10, 8)
-        toolbar.setSpacing(8)
+        toolbar.setContentsMargins(8, 4, 8, 4)
+        toolbar.setSpacing(6)
         match_mode = self._make_source_combo(rule.get("matchMode", "range"))
         match_mode.setObjectName("group_match_mode")
+        match_mode.setFixedHeight(28)
         output_type = self._make_target_combo(rule.get("outputType", "Array"))
         output_type.setObjectName("group_output_type")
+        output_type.setFixedHeight(28)
         mapping_strategy = QComboBox()
         mapping_strategy.setObjectName("group_mapping_strategy")
+        mapping_strategy.setFixedHeight(28)
         mapping_strategy.addItem("条件命中输出整组目标", "broadcast")
         mapping_strategy.addItem("源与目标逐项配对", "pairwise")
         self._set_combo_data(mapping_strategy, rule.get("mappingStrategy", "broadcast"))
@@ -190,25 +212,13 @@ class AdvancedMappingDialog(QDialog):
         toolbar.addStretch()
         outer.addWidget(toolbar_frame)
 
-        header = QHBoxLayout()
-        header.setContentsMargins(8, 2, 8, 0)
-        header.setSpacing(8)
-        for text, stretch in [("分支", 1), ("条件", 2), ("目标", 2), ("", 0)]:
-            label = QLabel(text)
-            label.setObjectName("case_header")
-            if stretch:
-                header.addWidget(label, stretch=stretch)
-            else:
-                header.addWidget(label)
-        outer.addLayout(header)
-
         cases_layout = QVBoxLayout()
         cases_layout.setObjectName("cases_layout")
         cases_layout.setContentsMargins(0, 0, 0, 0)
-        cases_layout.setSpacing(6)
+        cases_layout.setSpacing(5)
         outer.addLayout(cases_layout)
 
-        btn_add_case = QPushButton("+ 新增分支规则")
+        btn_add_case = QPushButton("+ 新增条件分支")
         btn_add_case.clicked.connect(lambda checked=False, layout=cases_layout: self.add_case_row(layout))
         outer.addWidget(btn_add_case, alignment=Qt.AlignLeft)
 
@@ -224,23 +234,27 @@ class AdvancedMappingDialog(QDialog):
         row = QFrame()
         row.setObjectName("mapping_case_row")
         layout = QHBoxLayout(row)
-        layout.setContentsMargins(8, 6, 8, 6)
-        layout.setSpacing(6)
+        layout.setContentsMargins(8, 5, 8, 5)
+        layout.setSpacing(8)
 
-        case_name = QLineEdit(str(case.get("caseName", "")))
-        case_name.setObjectName("case_name")
-        case_name.setPlaceholderText("分支名，如 1-3月")
+        prefix = QLabel(f"▾ {self.field_name} >")
+        prefix.setObjectName("mapping_param_label")
+        prefix.setMinimumWidth(110)
         source_input = QLineEdit(str(case.get("source", "")))
         source_input.setObjectName("source_expr")
-        source_input.setPlaceholderText("如 1-3 或 1,2,3")
+        source_input.setPlaceholderText("条件，如 1-3 或 1,2,3")
+        arrow = QLabel("→")
+        arrow.setObjectName("mapping_arrow")
+        arrow.setAlignment(Qt.AlignCenter)
         target_input = QLineEdit(self._format_cell_value(case.get("target", "")))
         target_input.setObjectName("target_value")
-        target_input.setPlaceholderText("如 [1, 2, 3] 或 1-3")
+        target_input.setPlaceholderText("目标，如 [1, 2, 3] 或 1-3")
         btn_rm = QPushButton("删除")
-        btn_rm.clicked.connect(row.deleteLater)
+        btn_rm.clicked.connect(lambda checked=False, r=row: self._remove_dynamic_row(r))
 
-        layout.addWidget(case_name, stretch=1)
+        layout.addWidget(prefix)
         layout.addWidget(source_input, stretch=2)
+        layout.addWidget(arrow)
         layout.addWidget(target_input, stretch=2)
         layout.addWidget(btn_rm)
 
@@ -256,7 +270,7 @@ class AdvancedMappingDialog(QDialog):
         rules = []
         for i in range(self.rules_layout.count()):
             row = self.rules_layout.itemAt(i).widget()
-            if not row:
+            if not row or row.isHidden():
                 continue
             rule_name = row.findChild(QLineEdit, "rule_name").text().strip()
             strategy = row.findChild(QComboBox, "evaluation_strategy")
@@ -269,17 +283,16 @@ class AdvancedMappingDialog(QDialog):
                 continue
             for case_index in range(cases_layout.count()):
                 case_row = cases_layout.itemAt(case_index).widget()
-                if not case_row:
+                if not case_row or case_row.isHidden():
                     continue
-                case_name = case_row.findChild(QLineEdit, "case_name").text().strip()
                 source_expr = case_row.findChild(QLineEdit, "source_expr").text().strip()
                 target_value = case_row.findChild(QLineEdit, "target_value").text().strip()
-                if not any([case_name, source_expr, target_value]):
+                if not any([source_expr, target_value]):
                     continue
                 if not source_expr:
                     raise ValueError(f"第 {i + 1} 个映射组的第 {case_index + 1} 个分支缺少源匹配")
                 cases.append({
-                    "caseName": case_name or f"分支{case_index + 1}",
+                    "caseName": f"分支{case_index + 1}",
                     "source": source_expr,
                     "target": target_value,
                 })
@@ -314,46 +327,67 @@ class AdvancedParamMappingPanel(BaseToolPanel):
     use_type = False
     use_out = False
     theme_color = "#455A64"
-    action_name = "参数高级映射"
+    action_name = "参数输入"
     DATA_TYPES = DATA_TYPES
 
     def init_custom_ui(self):
-        card, inner = self._make_card("输入参数与映射规则")
+        card, inner = self._make_card("参数输入")
         self.custom_layout.addWidget(card)
 
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        btn_add = QPushButton("+ 新增输入")
-        btn_add.setFixedHeight(32)
-        btn_add.setStyleSheet(
-            "QPushButton { background: #F8FAFC; border: 1px solid #CBD5E1; "
-            "border-radius: 6px; padding: 4px 12px; color: #263238; }"
-            "QPushButton:hover { background: #EEF2F6; }"
-        )
-        btn_add.clicked.connect(lambda: self.add_parameter_row())
-        top.addStretch(1)
-        top.addWidget(btn_add)
-        inner.addLayout(top)
-
-        header = QHBoxLayout()
-        header.setContentsMargins(4, 0, 4, 0)
-        for text, stretch in [("命名", 2), ("类型", 1), ("输入", 2), ("映射", 1)]:
-            label = QLabel(text)
-            label.setStyleSheet("color: #455A64; font-size: 11px; font-weight: bold; border: none;")
-            header.addWidget(label, stretch=stretch)
-        inner.addLayout(header)
-
         self.param_rows = QVBoxLayout()
-        self.param_rows.setSpacing(6)
+        self.param_rows.setSpacing(8)
         inner.addLayout(self.param_rows)
         self.add_parameter_row()
 
+        btn_add = self._make_add_button("+ 添加输入参数")
+        btn_add.clicked.connect(lambda: self.add_parameter_row())
+        inner.addWidget(btn_add)
+
     def add_parameter_row(self, name="", data_type="String", value="", rules=None):
-        row = QWidget()
+        row = QFrame()
+        row.setObjectName("param_input_row")
         row._mapping_rules = [dict(rule) for rule in (rules or []) if isinstance(rule, dict)]
-        layout = QHBoxLayout(row)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        row.setStyleSheet("""
+            QFrame#param_input_row {
+                background: #FFFFFF;
+                border: 1px solid #E3EAF2;
+                border-radius: 8px;
+            }
+            QLabel#param_field_label {
+                color: #64748B;
+                font-size: 11px;
+                border: none;
+            }
+            QPushButton#mapping_button {
+                background: #EEF2F6;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                color: #374151;
+                padding: 4px 10px;
+            }
+            QPushButton#mapping_button:hover {
+                background: #E2E8F0;
+                border-color: #94A3B8;
+            }
+            QPushButton#param_delete_button {
+                background: #FFF5F5;
+                border: 1px solid #FED7D7;
+                border-radius: 6px;
+                color: #C53030;
+                padding: 4px 10px;
+            }
+            QPushButton#param_delete_button:hover {
+                background: #FFE4E6;
+                border-color: #FDA4AF;
+            }
+        """)
+        layout = QVBoxLayout(row)
+        layout.setContentsMargins(10, 8, 10, 8)
+        layout.setSpacing(7)
+
+        field_line = QHBoxLayout()
+        field_line.setContentsMargins(0, 0, 0, 0)
+        field_line.setSpacing(8)
 
         name_input = QLineEdit(str(name))
         name_input.setObjectName("field_name")
@@ -365,7 +399,8 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         type_combo = QComboBox()
         type_combo.setObjectName("data_type")
         type_combo.addItems(self.DATA_TYPES)
-        type_combo.setMinimumWidth(92)
+        type_combo.setMinimumWidth(86)
+        type_combo.setMaximumWidth(112)
         if data_type in self.DATA_TYPES:
             type_combo.setCurrentText(data_type)
 
@@ -376,19 +411,40 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         if hasattr(value_input, "set_parameter_enabled"):
             value_input.set_parameter_enabled(False)
 
+        def make_field(label_text, widget):
+            box = QWidget()
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(0, 0, 0, 0)
+            box_layout.setSpacing(3)
+            label = QLabel(label_text)
+            label.setObjectName("param_field_label")
+            box_layout.addWidget(label)
+            box_layout.addWidget(widget)
+            return box
+
         btn_mapping = QPushButton()
         btn_mapping.setObjectName("mapping_button")
-        btn_mapping.setFixedWidth(72)
+        btn_mapping.setFixedWidth(96)
+        btn_mapping.setFixedHeight(28)
         btn_mapping.clicked.connect(lambda checked=False, r=row: self.open_mapping_dialog(r))
-        btn_delete = QPushButton("删")
-        btn_delete.setFixedWidth(44)
-        btn_delete.clicked.connect(row.deleteLater)
+        btn_delete = QPushButton("删除")
+        btn_delete.setObjectName("param_delete_button")
+        btn_delete.setFixedWidth(58)
+        btn_delete.setFixedHeight(28)
+        btn_delete.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
 
-        layout.addWidget(name_input, stretch=2)
-        layout.addWidget(type_combo, stretch=1)
-        layout.addWidget(value_input, stretch=2)
-        layout.addWidget(btn_mapping)
-        layout.addWidget(btn_delete)
+        field_line.addWidget(make_field("命名", name_input), stretch=2)
+        field_line.addWidget(make_field("类型", type_combo))
+        field_line.addWidget(make_field("输入", value_input), stretch=2)
+        layout.addLayout(field_line)
+
+        action_line = QHBoxLayout()
+        action_line.setContentsMargins(0, 0, 0, 0)
+        action_line.setSpacing(6)
+        action_line.addStretch(1)
+        action_line.addWidget(btn_mapping)
+        action_line.addWidget(btn_delete)
+        layout.addLayout(action_line)
 
         self.param_rows.addWidget(row)
         self._attach_parameter_action(name_input)
@@ -422,7 +478,7 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         ui_rows = []
         for i in range(self.param_rows.count()):
             row = self.param_rows.itemAt(i).widget()
-            if not row:
+            if not row or row.isHidden():
                 continue
             name_input = row.findChild(QLineEdit, "field_name")
             type_combo = row.findChild(QComboBox, "data_type")
@@ -438,11 +494,12 @@ class AdvancedParamMappingPanel(BaseToolPanel):
     def get_custom_params(self):
         rows = self._collect_parameter_rows()
         config = build_rule_engine_config(rows)
+        runtime_payload = config["runtime_payload"]
         return {
             "advanced_parameters": rows,
-            "parameters": config["compatibility"]["raw_parameters"],
-            "typed_parameters": config["compatibility"]["runtime_parameters"],
-            "parameter_mappings": config["compatibility"]["parameter_mappings"],
+            "parameters": runtime_payload["raw_parameters"],
+            "typed_parameters": runtime_payload["runtime_parameters"],
+            "parameter_mappings": runtime_payload["parameter_mappings"],
             "rule_engine_config": config,
         }
 
@@ -464,15 +521,6 @@ class AdvancedParamMappingPanel(BaseToolPanel):
                         "source": case.get("sourceSelector", {}).get("expression", ""),
                         "outputType": case.get("targetTransformer", {}).get("outputType", "String"),
                         "target": case.get("targetTransformer", {}).get("value", ""),
-                    })
-                # 兼容旧版扁平 rule_engine_config。
-                if not cases and rule.get("sourceSelector"):
-                    cases.append({
-                        "caseName": rule.get("ruleName", ""),
-                        "matchMode": rule.get("sourceSelector", {}).get("matchMode", "exact"),
-                        "source": rule.get("sourceSelector", {}).get("expression", ""),
-                        "outputType": rule.get("targetTransformer", {}).get("outputType", "String"),
-                        "target": rule.get("targetTransformer", {}).get("value", ""),
                     })
                 rules_by_field.setdefault(field_name, []).append({
                     "ruleName": rule.get("ruleName", ""),
@@ -533,4 +581,4 @@ class AdvancedParamMappingPanel(BaseToolPanel):
                     "解析值": format_advanced_value(case.get("targetTransformer", {}).get("resolvedValue", "")),
                 })
         df = pd.DataFrame(rows)
-        self.step_recorded.emit("advanced_param_mapping", p, df, "参数高级映射")
+        self.step_recorded.emit("advanced_param_mapping", p, df, "参数输入")

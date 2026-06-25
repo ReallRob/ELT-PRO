@@ -1,6 +1,7 @@
 import copy
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 
 PLACEHOLDER_RE = re.compile(r"\$\{([^{}]+)\}")
@@ -8,6 +9,29 @@ LIST_SPLIT_RE = re.compile(r"\s*[,，;；]\s*")
 RANGE_RE = re.compile(r"^\s*(-?\d+)\s*(?:-|~|至|到|\.\.)\s*(-?\d+)\s*([^\d\s,，;；]*)\s*$")
 MONTH_RANGE_RE = re.compile(r"^\s*(-?\d+)\s*([^\d\s,，;；\-~.]+)\s*(?:-|~|至|到|\.\.)\s*(-?\d+)\s*\2\s*$")
 MAX_EXPANDED_RANGE = 5000
+
+
+def _normalize_numeric_key(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return format(value, "g")
+    if isinstance(value, str):
+        text = value.strip()
+        if not re.fullmatch(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)", text):
+            return None
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            return None
+        if number == number.to_integral_value():
+            return str(int(number))
+        return format(number.normalize(), "f").rstrip("0").rstrip(".")
+    return None
 
 
 def parse_parameter_literal(value):
@@ -39,8 +63,11 @@ def parse_parameter_literal(value):
 
     try:
         if re.fullmatch(r"[-+]?\d+", text):
+            digits = text.lstrip("+-")
+            if len(digits) > 1 and digits.startswith("0"):
+                return text
             return int(text)
-        if re.fullmatch(r"[-+]?\d+\.\d+", text):
+        if re.fullmatch(r"[-+]?(?:\d+\.\d*|\.\d+)", text):
             return float(text)
     except Exception:
         pass
@@ -49,7 +76,13 @@ def parse_parameter_literal(value):
 
 
 def _format_mapping_key(value):
+    numeric_key = _normalize_numeric_key(value)
+    if numeric_key is not None:
+        return numeric_key
     parsed = parse_parameter_literal(value)
+    numeric_key = _normalize_numeric_key(parsed)
+    if numeric_key is not None:
+        return numeric_key
     return str(parsed)
 
 
@@ -135,8 +168,7 @@ def normalize_parameter_mappings(mappings):
             for row in mapping:
                 if isinstance(row, dict) and "from" in row:
                     output = expand_mapping_output(row.get("to"))
-                    source_type = row.get("sourceDataType") or row.get("source_data_type")
-                    # 高级映射会写入 sourceDataType；旧映射没有该字段，继续走原解析逻辑。
+                    source_type = row.get("sourceDataType")
                     if str(source_type or "").strip() == "String":
                         input_values = row.get("from")
                         if not isinstance(input_values, (list, tuple, set)):
@@ -148,10 +180,13 @@ def normalize_parameter_mappings(mappings):
             normalized[name] = mapping_dict
         elif isinstance(mapping, dict):
             mapping_dict = {}
-            for key, value in mapping.items():
-                output = expand_mapping_output(value)
-                for input_value in expand_mapping_inputs(key):
-                    mapping_dict[_format_mapping_key(input_value)] = output
+            for key, output in mapping.items():
+                raw_key = "" if key is None else str(key).strip()
+                if raw_key:
+                    mapping_dict[raw_key] = output
+                normalized_key = _format_mapping_key(key)
+                if normalized_key and normalized_key not in mapping_dict:
+                    mapping_dict[normalized_key] = output
             normalized[name] = mapping_dict
         else:
             normalized[name] = {}
@@ -168,7 +203,7 @@ def _lookup_variable(name, parameters, strict):
 
 
 def _lookup_mapping_value(value, mapping):
-    # 先尝试原始文本键，再尝试旧的字面量键，兼顾强类型字符串和历史规则。
+    # String 类型映射优先保留原始文本键，避免编码类值如 001 被转成数字 1。
     raw_key = "" if value is None else str(value).strip()
     if raw_key in mapping:
         return True, mapping[raw_key]
@@ -219,6 +254,8 @@ def _apply_mapping(value, map_name, mappings, strict):
 
 
 def resolve_placeholder(expression, parameters, mappings, strict=False):
+    parameters = normalize_runtime_parameters(parameters)
+    mappings = normalize_parameter_mappings(mappings)
     parts = [part.strip() for part in expression.split("|") if part.strip()]
     if not parts:
         return ""

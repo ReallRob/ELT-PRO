@@ -16,25 +16,16 @@ DATA_TYPES = ["Integer", "Float", "String", "Boolean", "Array", "Object"]
 
 
 def normalize_mapping_groups(rules):
-    """Normalize old flat rules and new switch-style groups into one shape."""
+    """Normalize mapping groups from the current editor shape."""
     groups = []
     for index, rule in enumerate(rules or [], start=1):
         if not isinstance(rule, dict):
             continue
         cases = rule.get("cases")
-        if isinstance(cases, list):
-            normalized_cases = [dict(case) for case in cases if isinstance(case, dict)]
-            first_case = normalized_cases[0] if normalized_cases else {}
-        else:
-            # Compatibility: older configs stored each branch as a top-level rule.
-            normalized_cases = [{
-                "caseName": rule.get("caseName") or rule.get("ruleName") or f"分支{index}",
-                "matchMode": rule.get("matchMode", rule.get("source_mode", "exact")),
-                "source": rule.get("source", rule.get("from", "")),
-                "outputType": rule.get("outputType", rule.get("target_type", "String")),
-                "target": rule.get("target", rule.get("to", "")),
-            }]
-            first_case = normalized_cases[0]
+        if not isinstance(cases, list):
+            continue
+        normalized_cases = [dict(case) for case in cases if isinstance(case, dict)]
+        first_case = normalized_cases[0] if normalized_cases else {}
 
         groups.append({
             "ruleName": rule.get("ruleName") or rule.get("mappingName") or f"映射{index}",
@@ -139,11 +130,11 @@ def coerce_parameter_rows(ui_rows):
 
 
 def build_rule_engine_config(rows):
-    """Build the structured rule config plus a compatibility map for placeholders."""
+    """Build structured rule config and the runtime payload used by placeholders."""
     parameters = []
     typed_parameters = {}
     raw_parameters = {}
-    compat_mappings = {}
+    runtime_mappings = {}
     engine_rules = []
     duplicate_sources = set()
 
@@ -152,7 +143,7 @@ def build_rule_engine_config(rows):
         typed_parameters[field_name] = param["value"]
         raw_parameters[field_name] = param["input"]
         rule_refs = []
-        compat_rules = []
+        runtime_rules = []
 
         for idx, rule in enumerate(param.get("rules", []), start=1):
             rule_name = rule.get("ruleName") or f"{field_name} 映射 {idx}"
@@ -194,11 +185,11 @@ def build_rule_engine_config(rows):
 
                 mapping_strategy = case.get("mappingStrategy", default_mapping_strategy)
                 if mapping_strategy == "pairwise" and len(source_values) > 1 and len(source_values) == len(target_values):
-                    compatibility_targets = target_values
-                    compatibility_strategy = "pairwise"
+                    runtime_targets = target_values
+                    runtime_strategy = "pairwise"
                 else:
-                    compatibility_targets = [target_value for _ in source_values]
-                    compatibility_strategy = "broadcast"
+                    runtime_targets = [target_value for _ in source_values]
+                    runtime_strategy = "broadcast"
 
                 case_name = case.get("caseName") or f"分支{case_idx}"
                 case_id = f"{rule_id}.case_{case_idx}"
@@ -218,15 +209,14 @@ def build_rule_engine_config(rows):
                         "resolvedValue": target_value,
                     },
                     "mappingStrategy": mapping_strategy,
-                    "compatibility": {
-                        "strategy": compatibility_strategy,
+                    "runtime": {
+                        "strategy": runtime_strategy,
                     },
                 })
-                # parameter_mappings 是兼容现有 ${param|map:name} 占位符解析器的扁平结构。
-                for source_value, compat_target in zip(source_values, compatibility_targets):
-                    compat_rules.append({
+                for source_value, runtime_target in zip(source_values, runtime_targets):
+                    runtime_rules.append({
                         "from": source_value,
-                        "to": compat_target,
+                        "to": runtime_target,
                         "ruleName": rule_name,
                         "caseName": case_name,
                         "matchMode": match_mode,
@@ -255,20 +245,20 @@ def build_rule_engine_config(rows):
             "dataType": param["dataType"],
             "input": param["input"],
             "value": param["value"],
-            "mappingRef": field_name if compat_rules else "",
+            "mappingRef": field_name if runtime_rules else "",
             "ruleRefs": rule_refs,
         })
-        if compat_rules:
-            compat_mappings[field_name] = compat_rules
+        if runtime_rules:
+            runtime_mappings[field_name] = runtime_rules
 
     return {
         "schema": SCHEMA_NAME,
         "operator": OPERATOR_NAME,
         "parameters": parameters,
         "rules": engine_rules,
-        "compatibility": {
+        "runtime_payload": {
             "runtime_parameters": typed_parameters,
             "raw_parameters": raw_parameters,
-            "parameter_mappings": compat_mappings,
+            "parameter_mappings": runtime_mappings,
         },
     }

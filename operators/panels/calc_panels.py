@@ -21,7 +21,9 @@ from PyQt5.QtWidgets import (
 )
 
 from operators.base_panel import BaseToolPanel, ParameterTextEdit, QLineEdit
+from core.dataframe_ops.columns import stringify_column_name
 from core.dataframe_ops import (
+    calc_code,
     calc_col,
     clean_data,
     concat_rows,
@@ -54,18 +56,10 @@ class RankPanel(BaseToolPanel):
         self.rules_layout.setSpacing(6)
         inner.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加排名规则")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E3F2FD; border: 1px dashed #90CAF9; "
-            "border-radius: 4px; padding: 6px; color: #0D47A1; font-size: 12px; }"
-            "QPushButton:hover { background: #BBDEFB; }"
-        )
+        btn_add = self._make_add_button("+ 添加排名规则")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
-        hint = QLabel(
-            "min(中国式1,2,2,4) | dense(密集1,2,2,3) | max(1,3,3,4) | average | first(顺延)"
-        )
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("min 中国式排名；dense 密集排名；max、average、first 分别对应不同并列处理方式。")
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -88,10 +82,8 @@ class RankPanel(BaseToolPanel):
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("新列名 (必填)")
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.setStyleSheet("border:none; color: red;")
-        btn_rm.clicked.connect(container.deleteLater)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=container: self.remove_dynamic_row(r))
         h1.addWidget(col_combo)
         h1.addWidget(QLabel("->"))
         h1.addWidget(r_input)
@@ -177,64 +169,143 @@ class CalcPanel(BaseToolPanel):
     action_name = "计算"
 
     def init_custom_ui(self):
-        card, inner = self._make_card("计算公式")
+        card, inner = self._make_card("规则配置")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
-        self.rules_layout.setSpacing(4)
+        self.rules_layout.setSpacing(6)
         inner.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加新公式列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E0F7FA; border: 1px dashed #4DD0E1; "
-            "border-radius: 4px; padding: 6px; color: #006064; font-size: 12px; }"
-            "QPushButton:hover { background: #B2EBF2; }"
-        )
+        btn_add = self._make_add_button("+ 添加新公式列")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
 
-        hint = QLabel("列名务必用中括号包裹。如: ([销售额] - [成本]) * 0.1")
-        hint.setStyleSheet(
-            "color: #E65100; font-size: 11px; font-weight: bold; "
-            "background: #FFF8E1; border-radius: 4px; padding: 6px; border: none;"
-        )
+        hint = self._make_hint_label("公式模式用 [列名]；代码模式中 df 为当前表，pd/np/re/math 已可用。")
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
         self.clear_dynamic_layout(self.rules_layout)
         self.add_rule_row()
 
-    def add_rule_row(self, new_col="", formula=""):
-        row = QWidget()
-        l = QHBoxLayout(row)
-        l.setContentsMargins(0, 0, 0, 0)
+    def add_rule_row(self, new_col="", formula="", mode="formula", code="", timeout_seconds=10):
+        mode = mode if mode in ("formula", "code") else "formula"
+        summary = self._calc_rule_summary(new_col, code if mode == "code" else formula, mode)
+        row, header_btn, body = self._make_collapsible_rule(summary)
+        body.setObjectName("rule_body")
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(8)
+
+        name_row = QHBoxLayout()
+        name_row.setContentsMargins(0, 0, 0, 0)
+        name_row.setSpacing(6)
+        option_row = QHBoxLayout()
+        option_row.setContentsMargins(0, 0, 0, 0)
+        option_row.setSpacing(6)
         n_input = QLineEdit(str(new_col))
         n_input.setObjectName("new_col")
-        n_input.setPlaceholderText("新列名")
+        n_input.setPlaceholderText("输出列(代码模式可选)")
+        n_input.textChanged.connect(lambda: self._update_calc_summary(row, header_btn))
+        mode_combo = QComboBox()
+        mode_combo.setObjectName("mode")
+        mode_combo.addItem("公式", userData="formula")
+        mode_combo.addItem("我写代码", userData="code")
+        mode_combo.setMinimumWidth(88)
+        mode_combo.setMaximumWidth(112)
+        mode_combo.setCurrentIndex(1 if mode == "code" else 0)
+        timeout_input = QLineEdit("10")
+        timeout_input.setObjectName("timeout_seconds")
+        timeout_input.setPlaceholderText("秒")
+        timeout_input.setMaximumWidth(56)
+        timeout_input.setText(str(timeout_seconds or 10))
         f_input = ParameterTextEdit(str(formula))
         f_input.setObjectName("formula")
         f_input.setPlaceholderText("表达式 (如: [销售额]*0.1)")
         f_input.setMinimumHeight(72)
+        f_input.textChanged.connect(lambda: self._update_calc_summary(row, header_btn))
+        c_input = ParameterTextEdit(str(code or ""))
+        c_input.setObjectName("code")
+        c_input.setPlaceholderText(self._default_code_placeholder(new_col))
+        c_input.setMinimumHeight(176)
+        c_input.textChanged.connect(lambda: self._update_calc_summary(row, header_btn))
 
-        btn_insert = QPushButton("📥")
-        btn_insert.setFixedWidth(28)
-        btn_insert.setToolTip("插入列名到公式")
+        btn_insert = QPushButton("插入列")
+        btn_insert.setFixedWidth(64)
+        btn_insert.setToolTip("按当前模式插入列引用")
         btn_insert.setStyleSheet(
             "QPushButton { background: #E0F7FA; border: 1px solid #B2EBF2; "
             "border-radius: 3px; font-size: 12px; }"
             "QPushButton:hover { background: #B2EBF2; }"
         )
-        btn_insert.clicked.connect(lambda checked, fi=f_input: self._show_col_menu(fi))
+        btn_insert.clicked.connect(
+            lambda checked, fi=f_input, ci=c_input, mc=mode_combo: self._show_col_menu(
+                ci if mc.currentData() == "code" else fi,
+                mc.currentData(),
+            )
+        )
+        mode_combo.currentIndexChanged.connect(
+            lambda _idx, fi=f_input, ci=c_input, r=row, h=header_btn: self._sync_calc_mode(fi, ci, r, h)
+        )
 
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(n_input)
-        l.addWidget(f_input)
-        l.addWidget(btn_insert)
-        l.addWidget(btn_rm)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        name_row.addWidget(self._inline_label("列"))
+        name_row.addWidget(n_input, stretch=1)
+        name_row.addWidget(btn_rm)
+        layout.addLayout(name_row)
+        option_row.addWidget(self._inline_label("模式"))
+        option_row.addWidget(mode_combo)
+        option_row.addWidget(self._inline_label("超时"))
+        option_row.addWidget(timeout_input)
+        option_row.addWidget(btn_insert)
+        option_row.addStretch(1)
+        layout.addLayout(option_row)
+        layout.addWidget(f_input)
+        layout.addWidget(c_input)
+        self._sync_calc_mode(f_input, c_input, row, header_btn)
         self.rules_layout.addWidget(row)
 
-    def _show_col_menu(self, target_input):
+    def _calc_rule_summary(self, new_col, formula, mode="formula"):
+        name = str(new_col or "").strip()
+        expr = str(formula or "").strip()
+        if name and expr:
+            prefix = "代码" if mode == "code" else "公式"
+            return f"{name} · {prefix} · {expr[:24]}"
+        if expr and mode == "code":
+            return f"代码 · {expr[:28]}"
+        return name or "新公式列"
+
+    def _default_code_placeholder(self, new_col=""):
+        col = str(new_col or "结果").strip() or "结果"
+        return (
+            "df 为当前表，pd/np/re/math 已可用\n"
+            "params['参数名'] 取参数，param('参数名', '映射名') 取映射值\n"
+            "示例：\n"
+            "end = pd.to_datetime(df['结束日期'])\n"
+            "start = pd.to_datetime(df['开始日期'])\n"
+            f"df[{col!r}] = (end - start).dt.days + 1"
+        )
+
+    def _sync_calc_mode(self, formula_input, code_input, row, header_btn):
+        mode_combo = row.findChild(QComboBox, "mode")
+        is_code = bool(mode_combo and mode_combo.currentData() == "code")
+        formula_input.setVisible(not is_code)
+        code_input.setVisible(is_code)
+        self._update_calc_summary(row, header_btn)
+
+    def _update_calc_summary(self, row, header_btn):
+        name_input = row.findChild(QLineEdit, "new_col")
+        formula_input = row.findChild(ParameterTextEdit, "formula")
+        code_input = row.findChild(ParameterTextEdit, "code")
+        mode_combo = row.findChild(QComboBox, "mode")
+        mode = mode_combo.currentData() if mode_combo else "formula"
+        name = name_input.text().strip() if name_input else ""
+        if mode == "code" and code_input:
+            formula = code_input.text().strip()
+        else:
+            formula = formula_input.text().strip() if formula_input else ""
+        self._update_rule_summary(header_btn, self._calc_rule_summary(name, formula, mode))
+
+    def _show_col_menu(self, target_input, mode="formula"):
         df_name = self.df_combo.currentText() if self.use_df else ""
         cols = []
         if df_name and df_name in self.data_pool:
@@ -249,21 +320,66 @@ class CalcPanel(BaseToolPanel):
             QMenu::item:selected { background: #E0F7FA; color: #006064; }
         """)
         for col in cols:
-            action = menu.addAction(f"[{col}]")
+            display_col = stringify_column_name(col)
+            label = f"df[{display_col!r}]" if mode == "code" else f"[{display_col}]"
+            action = menu.addAction(label)
             action.triggered.connect(
-                lambda checked, c=col, fi=target_input: self._insert_col_at_cursor(fi, c)
+                lambda checked, c=display_col, fi=target_input, m=mode: self._insert_col_at_cursor(fi, c, m)
             )
         # show near the button
         menu.exec_(QCursor.pos())
 
-    def _insert_col_at_cursor(self, line_edit, col_name):
+    def _insert_col_at_cursor(self, line_edit, col_name, mode="formula"):
         text = line_edit.text()
         pos = line_edit.cursorPosition()
-        insert = f"[{col_name}]"
+        insert = f"df[{col_name!r}]" if mode == "code" else f"[{col_name}]"
         new_text = text[:pos] + insert + text[pos:]
         line_edit.setText(new_text)
         line_edit.setCursorPosition(pos + len(insert))
         line_edit.setFocus()
+
+    def _show_parameter_menu(self, line_edit):
+        is_code = False
+        try:
+            is_code = line_edit.objectName() == "code"
+        except Exception:
+            is_code = False
+        if not is_code:
+            return super()._show_parameter_menu(line_edit)
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: white; border: 1px solid #CBD5E1; border-radius: 6px; }
+            QMenu::item { padding: 7px 18px; font-size: 12px; }
+            QMenu::item:selected { background: #E0F7FA; color: #006064; }
+            QMenu::separator { height: 1px; background: #E5EAF0; margin: 4px 8px; }
+        """)
+        params = sorted((self._runtime_parameters or {}).keys())
+        mappings = sorted((self._parameter_mappings or {}).keys())
+        if params:
+            for name in params:
+                action = menu.addAction(f"params[{name!r}]")
+                action.triggered.connect(
+                    lambda checked=False, n=name: self._insert_text_at_cursor(
+                        line_edit, f"params[{n!r}]"
+                    )
+                )
+        else:
+            action = menu.addAction("暂无可用参数")
+            action.setEnabled(False)
+
+        if params and mappings:
+            menu.addSeparator()
+            for mapping_name in mappings:
+                for param_name in params:
+                    label = f"param({param_name!r}, {mapping_name!r})"
+                    action = menu.addAction(label)
+                    action.triggered.connect(
+                        lambda checked=False, p=param_name, m=mapping_name: self._insert_text_at_cursor(
+                            line_edit, f"param({p!r}, {m!r})"
+                        )
+                    )
+        menu.exec_(line_edit.mapToGlobal(line_edit.rect().bottomRight()))
 
     def set_custom_params(self, p):
         rules = p.get("rules", [])
@@ -272,19 +388,40 @@ class CalcPanel(BaseToolPanel):
         if rules:
             self.clear_dynamic_layout(self.rules_layout)
             for r in rules:
-                self.add_rule_row(r.get("new_col_name"), r.get("formula"))
+                self.add_rule_row(
+                    r.get("new_col_name", ""),
+                    r.get("formula", ""),
+                    r.get("mode", "formula"),
+                    r.get("code", ""),
+                    r.get("timeout_seconds", 10),
+                )
 
     def get_custom_params(self):
         rules = []
         for i in range(self.rules_layout.count()):
             w = self.rules_layout.itemAt(i).widget()
             if w:
-                n, f = (
-                    w.findChild(QLineEdit, "new_col").text().strip(),
-                    (w.findChild(ParameterTextEdit, "formula") or w.findChild(QLineEdit, "formula")).text().strip(),
-                )
-                if n and f:
-                    rules.append({"new_col_name": n, "formula": f})
+                name_input = w.findChild(QLineEdit, "new_col")
+                mode_combo = w.findChild(QComboBox, "mode")
+                formula_input = w.findChild(ParameterTextEdit, "formula") or w.findChild(QLineEdit, "formula")
+                code_input = w.findChild(ParameterTextEdit, "code")
+                timeout_input = w.findChild(QLineEdit, "timeout_seconds")
+                n = name_input.text().strip() if name_input else ""
+                mode = mode_combo.currentData() if mode_combo else "formula"
+                if mode == "code":
+                    code = code_input.text().strip() if code_input else ""
+                    if code:
+                        timeout_text = timeout_input.text().strip() if timeout_input else "10"
+                        rules.append({
+                            "new_col_name": n,
+                            "mode": "code",
+                            "code": code,
+                            "timeout_seconds": timeout_text or "10",
+                        })
+                else:
+                    f = formula_input.text().strip() if formula_input else ""
+                    if n and f:
+                        rules.append({"new_col_name": n, "formula": f, "mode": "formula"})
         return {"rules": rules}
 
     def execute(self):
@@ -295,7 +432,17 @@ class CalcPanel(BaseToolPanel):
         try:
             df = self.data_pool[p["df_name"]].copy()
             for rule in p["rules"]:
-                df = calc_col(df, rule["new_col_name"], rule["formula"])
+                if rule.get("mode") == "code":
+                    df = calc_code(
+                        df,
+                        rule.get("code", rule.get("formula", "")),
+                        rule.get("new_col_name", ""),
+                        self._runtime_parameters,
+                        self._parameter_mappings,
+                        rule.get("timeout_seconds", 10),
+                    )
+                else:
+                    df = calc_col(df, rule["new_col_name"], rule["formula"])
             self.step_recorded.emit("calc_col", p, df, out_name)
         except Exception as e:
             QMessageBox.critical(self, "失败", str(e))
@@ -314,17 +461,11 @@ class CumsumPanel(BaseToolPanel):
         self.col_layout.setSpacing(4)
         inner.addLayout(self.col_layout)
         self.add_col_row()
-        btn_add = QPushButton("+ 添加累加列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E0F2F1; border: 1px dashed #80CBC4; "
-            "border-radius: 4px; padding: 6px; color: #00695C; font-size: 12px; }"
-            "QPushButton:hover { background: #B2DFDB; }"
-        )
+        btn_add = self._make_add_button("+ 添加累加列")
         btn_add.clicked.connect(lambda: self.add_col_row())
         inner.addWidget(btn_add)
 
-        hint = QLabel("累加计算逐行累计。新列名 = 原列名_累加。适合做累计销售额、累计数量等。")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("累加计算逐行累计。新列名默认为原列名_累加。")
         inner.addWidget(hint)
 
     def add_col_row(self, col=""):
@@ -333,10 +474,9 @@ class CumsumPanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("累加列", dtype_filter="numeric")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.col_layout.addWidget(row)
 
@@ -387,22 +527,18 @@ class PctChangePanel(BaseToolPanel):
         self.col_layout.setSpacing(4)
         inner.addLayout(self.col_layout)
         self.add_col_row()
-        btn_add = QPushButton("+ 添加环比列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #FBE9E7; border: 1px dashed #FFAB91; "
-            "border-radius: 4px; padding: 6px; color: #BF360C; font-size: 12px; }"
-            "QPushButton:hover { background: #FFCCBC; }"
-        )
+        btn_add = self._make_add_button("+ 添加环比列")
         btn_add.clicked.connect(lambda: self.add_col_row())
         inner.addWidget(btn_add)
 
         fl = QFormLayout()
+        fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.periods_input = QLineEdit("1")
         fl.addRow("间隔期数:", self.periods_input)
         inner.addLayout(fl)
 
-        hint = QLabel("环比 = (当前值 - 上期值) / 上期值。间隔期数: 1=逐行对比, 12=同比(月度数据)")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("环比 = (当前值 - 上期值) / 上期值。间隔期数 1 为逐行对比，12 常用于月度同比。")
         inner.addWidget(hint)
 
     def add_col_row(self, col=""):
@@ -411,10 +547,9 @@ class PctChangePanel(BaseToolPanel):
         l.setContentsMargins(0, 0, 0, 0)
         col_combo = self._make_col_combo("环比列", dtype_filter="numeric")
         self._set_col_name(col_combo, str(col))
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
         l.addWidget(btn_rm)
         self.col_layout.addWidget(row)
 

@@ -17,6 +17,7 @@
 ├── table_model.py                  # pandas DataFrame 到 Qt 表格模型的适配
 ├── utils.py                        # 画布连线、网格、布局等通用图形工具
 ├── core/
+│   ├── app_paths.py               # 程序运行目录等路径工具，供 UI 和执行引擎复用
 │   ├── dataframe_ops/
 │   │   ├── columns.py              # 列名/列序号/Excel 字母列统一解析
 │   │   ├── dates.py                # 日期值和日期列统一解析，减少 pandas 推断警告
@@ -26,7 +27,7 @@
 │   │   ├── aggregate.py            # 分组、透视、逆透视、描述统计算子
 │   │   ├── table.py                # 表连接、纵向拼接、转置算子
 │   │   ├── calc.py                 # 排名、公式列、累加、环比算子
-│   │   └── io.py                   # DataFrame 导出算子
+│   │   └── io.py                   # 数据源读取、列范围下推和 DataFrame 导出算子
 │   ├── parameters/
 │   │   └── mapping_schema.py       # 参数高级映射 schema 构造与强类型转换
 │   └── workflow/
@@ -36,11 +37,11 @@
 │   │   ├── design_mode.py          # 设计模式主入口，负责初始化状态并装配 UI/mixin
 │   │   ├── app_state.py            # 设计态配置路径、工作区状态读写和恢复
 │   │   ├── canvas_actions.py       # 创建、删除、清空节点和自动排版
-│   │   ├── config_pages.py         # 配置弹窗空状态和旧算子提示页
+│   │   ├── config_pages.py         # 右侧配置面板空状态页
 │   │   ├── context_menu.py         # 设计态画布右键菜单
 │   │   ├── dock_controls.py        # Dock 显示、浮动标题栏和置顶控制
 │   │   ├── import_export_ui.py     # 工作流导入/导出文件选择、路径修复和提示
-│   │   ├── layout_builder.py       # Dock、画布、预览区和配置弹窗装配
+│   │   ├── layout_builder.py       # Dock、画布、预览区和右侧配置区装配
 │   │   ├── node_config.py          # 节点配置面板切换、草稿保存和参数同步
 │   │   ├── preview_panel.py        # 设计态数据预览、自动跟随和预览标签
 │   │   ├── run_controls.py         # 设计态全量执行进度和完成回调
@@ -65,7 +66,7 @@
 ├── operators/
 │   ├── base_panel.py               # BaseToolPanel 及参数输入别名
 │   └── panels/
-│       ├── advanced_param_mapping.py # 参数高级映射 UI 面板与分支规则弹窗
+│       ├── advanced_param_mapping.py # 参数输入 UI 面板与分支规则弹窗
 │       ├── aggregate_panels.py       # 分组、透视、逆透视、描述统计面板
 │       ├── calc_panels.py            # 排名、计算列、累加、环比面板
 │       ├── io_panels.py              # 导入/导出面板
@@ -82,8 +83,8 @@
 
 1. 参数算子合并
    - 旧的「输入参数」和「参数映射」可见算子已从注册/UI 中移除。
-   - 新的 `advanced_param_mapping` 是唯一的参数高级配置算子。
-   - 引擎和解析器仍保留旧 JSON 的兼容逻辑，避免历史工作流无法运行。
+   - `advanced_param_mapping` 是唯一的参数输入算子。
+   - 研发期不保留旧参数工作流兼容路径，结构问题直接暴露。
 
 2. 参数高级映射结构升级
    - 输入参数和映射规则被整合为一个算子。
@@ -98,7 +99,7 @@
 
 4. 设计模式 UI 拆分
    - `ui/design/design_mode.py` 只负责状态初始化和模块装配。
-   - 工具栏、Dock 布局、配置弹窗、预览、运行控制、节点配置、导入导出、右键菜单等已拆为独立模块。
+   - 工具栏、Dock 布局、右侧配置区、预览、运行控制、节点配置、导入导出、右键菜单等已拆为独立模块。
 
 5. 执行模式 UI 拆分
    - `ui/execute/execute_mode.py` 只负责执行态状态初始化和模块装配。
@@ -114,10 +115,11 @@
    - 真实算子实现按领域迁移到 `core/dataframe_ops/`。
    - 日期解析集中到 `core/dataframe_ops/dates.py`，优先按明确格式解析，减少 pandas 日期推断警告。
 
-8. 兼容层引用收紧
+8. 历史包袱清理
    - 项目主入口已直接导入 `ui.design.design_mode` 和 `ui.execute.execute_mode`。
    - 引擎 handler 和算子面板已直接导入 `core.dataframe_ops`。
    - `ui_components.py`、`ui_design.py`、`ui_execute.py` 和 `xlsx_fun.py` 均已删除。
+   - 旧参数算子、旧模板导出节点和旧字段兜底已移除。
 
 ## 当前职责边界
 
@@ -144,7 +146,7 @@
 - `parameter_resolver.py` 是运行期解析内核。
 - `parameter_input.py` 是支持参数引用的输入控件。
 - `core/parameters/mapping_schema.py` 是规则配置生成器。
-- `operators/panels/advanced_param_mapping.py` 只负责 UI 采集和预览展示。
+- `operators/panels/advanced_param_mapping.py` 只负责参数输入 UI 采集和预览展示。
 
 ## 后续建议
 
@@ -153,7 +155,7 @@
 ## 注释约定
 
 1. 注释解释“为什么这样做”，避免解释显而易见的语句。
-2. 兼容旧工作流、强类型转换、规则引擎 schema、UI 与运行时桥接处必须加短注释。
+2. 强类型转换、规则引擎 schema、UI 与运行时桥接处必须加短注释。
 3. 复杂函数开头写简短 docstring，说明输入、输出和关键约束。
 4. 面板类建议按区域分段：UI 构建、数据收集、配置生成、执行预览。
 5. 方案变化后删除过期注释，避免文档和代码互相误导。

@@ -159,10 +159,10 @@ class SettingsDialog(QDialog):
             "QPushButton:hover { background: #1565C0; }"
         )
         btn_save.clicked.connect(self.accept)
-        bn.addWidget(btn_save)
         bottom.addWidget(self._bottom_op)
         bottom.addWidget(self._bottom_naming)
         bottom.addStretch()
+        bottom.addWidget(btn_save)
         right_layout.addLayout(bottom)
 
         main_layout.addWidget(right_panel)

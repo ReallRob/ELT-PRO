@@ -4,12 +4,45 @@ import json
 import os
 
 from node_editor import EdgeItem, NodeItem
-from operator_registry import NODE_REGISTRY
+from core.manifest_builder import attach_run_manifest
+from core.workflow.action_handlers import collect_action_dependencies
+from operator_registry import NODE_REGISTRY, get_operator_title
 
 
 def load_workflow_file(path):
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        workflow = json.load(f)
+    validate_workflow_config(workflow)
+    return workflow
+
+
+
+
+def validate_workflow_config(workflow):
+    if not isinstance(workflow, dict):
+        raise ValueError("工作流 JSON 顶层必须是对象")
+    steps = workflow.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError("工作流 JSON 缺少 steps 列表")
+    seen_ids = set()
+    for index, step in enumerate(steps, start=1):
+        if not isinstance(step, dict):
+            raise ValueError(f"第 {index} 个步骤必须是对象")
+        node_id = step.get("node_id")
+        action = step.get("action")
+        params = step.get("params")
+        if not node_id:
+            raise ValueError(f"第 {index} 个步骤缺少 node_id")
+        if node_id in seen_ids:
+            raise ValueError(f"重复的 node_id: {node_id}")
+        seen_ids.add(node_id)
+        if not action:
+            raise ValueError(f"第 {index} 个步骤缺少 action")
+        if action not in NODE_REGISTRY:
+            raise ValueError(f"未知算子 action: {action}")
+        if params is not None and not isinstance(params, dict):
+            raise ValueError(f"第 {index} 个步骤 params 必须是对象")
+    return True
 
 
 def save_workflow_file(path, config):
@@ -30,9 +63,10 @@ def attach_design_preferences(config, hidden_toolbox, hidden_context_menu, namin
 def find_missing_load_files(steps):
     missing_files = {}
     for step in steps or []:
-        if step.get("action") != "load_file":
+        if step.get("action") not in ("load_file", "import_template"):
             continue
-        fpath = step.get("params", {}).get("file_path")
+        params = step.get("params", {})
+        fpath = params.get("file_path") or params.get("template_path")
         if fpath and not os.path.exists(fpath):
             missing_files[step.get("node_id")] = fpath
     return missing_files
@@ -44,7 +78,11 @@ def apply_file_mapping(steps, mapping):
     for step in steps or []:
         node_id = step.get("node_id")
         if node_id in mapping:
-            step.setdefault("params", {})["file_path"] = mapping[node_id]
+            params = step.setdefault("params", {})
+            if step.get("action") == "import_template":
+                params["template_path"] = mapping[node_id]
+            else:
+                params["file_path"] = mapping[node_id]
 
 
 def restore_design_preferences(widget, workflow):
@@ -65,24 +103,12 @@ def restore_design_preferences(widget, workflow):
 def restore_runtime_metadata(widget, workflow):
     widget.runtime_parameters = workflow.get("runtime_parameters", {})
     widget.parameter_mappings = workflow.get("parameter_mappings", {})
-    widget._sync_runtime_parameters()
+    widget.crpa_metadata = workflow.get("crpa", {})
+    widget.run_manifest = workflow.get("run_manifest", {})
 
 
-def _dependency_ids(action, params):
-    deps = []
-    if action in ("left_join", "concat_rows"):
-        if "df1_id" in params:
-            deps.append(params["df1_id"])
-        if "df2_id" in params:
-            deps.append(params["df2_id"])
-    elif action == "insert_block":
-        if "df_id" in params:
-            deps.append(params["df_id"])
-        if "template_id" in params:
-            deps.append(params["template_id"])
-    elif "df_id" in params:
-        deps.append(params["df_id"])
-    return deps
+def attach_publish_metadata(config, crpa=None, run_manifest=None):
+    return attach_run_manifest(config, crpa, run_manifest)
 
 
 def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
@@ -92,8 +118,12 @@ def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
 
     created_nodes = {}
     for i, step in enumerate(steps or []):
-        node_id = step.get("node_id", f"legacy_{i}")
+        node_id = step.get("node_id")
+        if not node_id:
+            raise ValueError(f"第 {i + 1} 个步骤缺少 node_id")
         action = step.get("action")
+        if action not in NODE_REGISTRY:
+            raise ValueError(f"未知算子 action: {action}")
         out_name = step.get("out_name", f"Result_{i}")
         params = dict(step.get("params", {}))
         params["out_name"] = out_name
@@ -108,6 +138,7 @@ def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
             color,
             step.get("x", 50),
             step.get("y", 50 + i * 100),
+            operator_name=get_operator_title(action),
         )
         node.params = params
         node.is_dirty = True
@@ -118,7 +149,7 @@ def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
         node = created_nodes.get(step.get("node_id"))
         if not node:
             continue
-        for src_id in _dependency_ids(node.action_type, step.get("params", {})):
+        for src_id in collect_action_dependencies(node.action_type, step.get("params", {})):
             if src_id in created_nodes:
                 edge = EdgeItem(created_nodes[src_id], node)
                 canvas_scene.addItem(edge)

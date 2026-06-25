@@ -51,59 +51,23 @@ class JoinPanel(BaseToolPanel):
 
     def _refresh_col_combos(self):
         """JoinPanel 使用右表(df2_combo)的列名"""
+        if self._panel_update_depth:
+            self._pending_col_combo_refresh = True
+            return
+        self._refresh_col_combos_now()
+
+    def _refresh_col_combos_now(self):
+        """JoinPanel 使用右表(df2_combo)的列名"""
         if not hasattr(self, "_col_combos"):
             return
         df_name = self.df2_combo.currentText() if hasattr(self, "df2_combo") else ""
         df = self.data_pool.get(df_name) if df_name else None
-        all_cols = list(df.columns) if df is not None else []
-
-        valid_combos = []
-        for combo in self._col_combos:
-            try:
-                cur = combo.currentText()
-            except RuntimeError:
-                continue
-            valid_combos.append(combo)
-
-            dtype_filter = self._col_combo_filters.get(combo) if hasattr(self, "_col_combo_filters") else None
-            if dtype_filter and df is not None:
-                cols = [c for c in all_cols if self._col_matches_dtype(df[c], dtype_filter)]
-            else:
-                cols = all_cols
-
-            combo.blockSignals(True)
-            combo.clear()
-            if cols:
-                for c in cols:
-                    try:
-                        dt = str(df[c].dtype)
-                        if "int" in dt:       tag = "int"
-                        elif "float" in dt:   tag = "float"
-                        elif "datetime" in dt: tag = "date"
-                        elif "bool" in dt:    tag = "bool"
-                        else:                 tag = "str"
-                    except Exception:
-                        tag = "?"
-                    combo.addItem(c, userData=c)
-                    combo.setItemData(combo.count() - 1, f"类型: {tag}", Qt.ToolTipRole)
-            combo.blockSignals(False)
-            if cur:
-                idx = combo.findData(cur)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                else:
-                    combo.setCurrentText(cur)
-
-        self._col_combos = valid_combos
-        if hasattr(self, "_col_combo_filters"):
-            self._col_combo_filters = {
-                cb: f for cb, f in self._col_combo_filters.items()
-                if cb in valid_combos
-            }
+        self._refresh_col_combos_from_df(df)
 
     def init_custom_ui(self):
         self.df1_combo = QComboBox()
         self.df2_combo = QComboBox()
+        self.df2_combo.currentTextChanged.connect(self._refresh_col_combos)
         self.combo_boxes_to_update.extend([self.df1_combo, self.df2_combo])
         self.top_form.insertRow(0, "主表 (左):", self.df1_combo)
         self.top_form.insertRow(1, "匹配表 (右):", self.df2_combo)
@@ -117,16 +81,10 @@ class JoinPanel(BaseToolPanel):
         self.rules_layout.setSpacing(4)
         inner.addLayout(self.rules_layout)
         self.add_rule_row()
-        btn_add = QPushButton("+ 添加提取列")
-        btn_add.setStyleSheet(
-            "QPushButton { background: #E8F5E9; border: 1px dashed #81C784; "
-            "border-radius: 4px; padding: 6px; color: #1B5E20; font-size: 12px; }"
-            "QPushButton:hover { background: #C8E6C9; }"
-        )
+        btn_add = self._make_add_button("+ 添加提取列")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
-        hint = QLabel("类似于 VLOOKUP，提取右表的列放入左表。")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("类似于 VLOOKUP，按匹配键把右表字段提取到主表。")
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -139,17 +97,17 @@ class JoinPanel(BaseToolPanel):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
+        l.setSpacing(6)
         col_combo = self._make_col_combo("右表列")
         col_combo.setObjectName("col")
         self._set_col_name(col_combo, str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
         r_input.setPlaceholderText("重命名(可选)")
-        btn_rm = QPushButton("×")
-        btn_rm.setFixedWidth(25)
-        btn_rm.clicked.connect(row.deleteLater)
-        l.addWidget(col_combo)
-        l.addWidget(r_input)
+        btn_rm = self._make_delete_button()
+        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        l.addWidget(col_combo, stretch=1)
+        l.addWidget(r_input, stretch=1)
         l.addWidget(btn_rm)
         self.rules_layout.addWidget(row)
 
@@ -234,9 +192,7 @@ class ConcatPanel(BaseToolPanel):
 
         hint_card, hint_inner = self._make_card()
         self.custom_layout.addWidget(hint_card)
-        hint = QLabel("纵向拼接将两个表上下接起来，类似 SQL 的 UNION ALL。")
-        hint.setStyleSheet("color: #888; font-size: 11px; border: none;")
-        hint.setWordWrap(True)
+        hint = self._make_hint_label("纵向拼接将两个表上下接起来，类似 SQL 的 UNION ALL。")
         hint_inner.addWidget(hint)
 
     def clear_custom_ui(self):

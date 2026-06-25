@@ -25,6 +25,11 @@ class CanvasContextMenuMixin:
             clicked_node = hit_item.parentItem()
 
         if clicked_node:
+            copy_action = menu.addAction("复制此节点")
+            copy_action.triggered.connect(
+                lambda checked, node=clicked_node: self._copy_single_node_from_menu(node)
+            )
+            menu.addSeparator()
             delete_action = menu.addAction("删除此节点")
             delete_action.triggered.connect(
                 lambda checked, node=clicked_node: self._delete_single_node(node)

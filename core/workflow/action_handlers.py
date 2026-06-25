@@ -6,12 +6,19 @@ pool and logging signals; handlers only implement one operator's business work.
 """
 
 import os
-import sys
 from pathlib import Path
 
-from template_engine import insert_into_template, load_template, save_template
+from core.app_paths import get_exec_dir
+from template_engine import (
+    build_template_metadata,
+    insert_into_template,
+    load_template,
+    save_template,
+)
 from core.dataframe_ops import (
+    calc_code,
     calc_col,
+    code_block,
     clean_data,
     concat_rows,
     cumsum_data,
@@ -33,14 +40,8 @@ from core.dataframe_ops import (
     transpose_data,
 )
 
-PARAMETER_ACTIONS = {"input_param", "param_mapping", "advanced_param_mapping"}
-TEMPLATE_ACTIONS = {"template_export", "import_template", "insert_block"}
-
-
-def get_exec_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    return Path(__file__).resolve().parents[2]
+PARAMETER_ACTIONS = {"advanced_param_mapping"}
+TEMPLATE_ACTIONS = {"import_template", "insert_block"}
 
 
 def collect_action_dependencies(action, params):
@@ -50,9 +51,15 @@ def collect_action_dependencies(action, params):
     rules here prevents dependency logic and handler dispatch from drifting.
     """
     if action == "import_template":
-        return []
+        return [d for d in params.get("insert_block_ids", []) if d]
     if action == "insert_block":
         return [d for d in [params.get("df_id"), params.get("template_id")] if d]
+    if action == "code_block":
+        return [
+            item.get("df_id")
+            for item in params.get("input_bindings", [])
+            if isinstance(item, dict) and item.get("df_id")
+        ]
     if action in ("left_join", "concat_rows"):
         return [params.get("df1_id"), params.get("df2_id")]
     if "df_id" in params:
@@ -65,27 +72,19 @@ def should_log_dataframe_shape(action):
 
 
 def should_publish_output(action):
-    return action not in TEMPLATE_ACTIONS and action not in PARAMETER_ACTIONS
+    return (
+        action == "import_template"
+        or (action not in TEMPLATE_ACTIONS and action not in PARAMETER_ACTIONS)
+    )
 
 
 def handle_parameter_action(engine, action, params):
     """Log parameter-only actions; they update runtime metadata before execution."""
-    if action == "input_param":
-        count = len(params.get("parameters", {}))
-        engine.log(f"    - 已加载运行参数: {count} 个")
-        return True
-
-    if action == "param_mapping":
-        mapping_name = params.get("mapping_name", "未命名映射")
-        rules = params.get("rules", [])
-        engine.log(f"    - 已加载参数映射: {mapping_name} ({len(rules)} 条规则)")
-        return True
-
     if action == "advanced_param_mapping":
         config = params.get("rule_engine_config", {})
         param_count = len(config.get("parameters", []))
         rule_count = len(config.get("rules", []))
-        engine.log(f"    - 已加载参数高级映射: {param_count} 个参数，{rule_count} 条规则")
+        engine.log(f"    - 已加载参数输入: {param_count} 个参数，{rule_count} 条规则")
         return True
 
     return False
@@ -214,8 +213,45 @@ def run_sort_data(engine, params, node_id):
 def run_calc_col(engine, params, node_id):
     df = engine.get_df(params.get("df_id"))
     for rule in params.get("rules", []):
-        df = calc_col(df, rule["new_col_name"], rule["formula"])
+        if rule.get("mode") == "code":
+            df = calc_code(
+                df,
+                rule.get("code", rule.get("formula", "")),
+                rule.get("new_col_name", ""),
+                getattr(engine, "runtime_parameters", {}),
+                getattr(engine, "parameter_mappings", {}),
+                rule.get("timeout_seconds", 10),
+            )
+        else:
+            df = calc_col(df, rule["new_col_name"], rule["formula"])
     engine.data_pool[node_id] = df
+
+
+def run_code_block(engine, params, node_id):
+    bindings = params.get("input_bindings") or []
+    if not bindings:
+        raise ValueError("代码块至少需要连接一个输入表")
+    tables = {}
+    for i, binding in enumerate(bindings):
+        if not isinstance(binding, dict):
+            continue
+        df_id = binding.get("df_id")
+        alias = str(binding.get("alias") or ("df" if i == 0 else f"df{i}")).strip()
+        if not df_id:
+            raise ValueError(f"代码块输入缺少上游节点 ID: {binding.get('table_name', '')}")
+        if alias in tables:
+            raise ValueError(f"代码块输入变量名重复: {alias}")
+        tables[alias] = engine.get_df(df_id)
+    if "df" not in tables and tables:
+        first_alias = next(iter(tables))
+        tables["df"] = tables[first_alias]
+    engine.data_pool[node_id] = code_block(
+        tables,
+        params.get("code", ""),
+        getattr(engine, "runtime_parameters", {}),
+        getattr(engine, "parameter_mappings", {}),
+        params.get("timeout_seconds", 10),
+    )
 
 
 def run_clean_data(engine, params, node_id):
@@ -320,85 +356,140 @@ def run_export_df(engine, params, node_id):
     engine.data_pool[node_id] = df
 
 
-def run_import_template(engine, params, node_id):
-    template_path = params.get("template_path")
-    if not template_path or not os.path.exists(template_path):
-        raise ValueError(f"模板文件不存在: {template_path}")
-    wb, meta = load_template(template_path)
-    engine.data_pool[node_id] = {"_wb": wb, "_meta": meta}
-    engine.log(
-        f"    - 模板已加载: {os.path.basename(template_path)}"
-        f" ({len(meta['sheet_names'])} 个工作表)"
-    )
+def _safe_template_output_name(name):
+    text = str(name or "").strip() or "result"
+    for ch in '<>:"/\\|?*':
+        text = text.replace(ch, "_")
+    return text
 
 
-def run_insert_block(engine, params, node_id):
-    df = engine.get_df(params.get("df_id"))
-    template_id = params.get("template_id")
-    if not template_id or template_id not in engine.data_pool:
-        raise ValueError(f"模板表未找到: {template_id}")
+def _resolve_template_output_path(params, template_path, has_insert_blocks=False):
+    explicit_path = params.get("output_path")
+    if explicit_path:
+        return explicit_path
+    if not has_insert_blocks:
+        return ""
 
-    tmpl_entry = engine.data_pool[template_id]
-    wb = tmpl_entry.get("_wb")
-    if wb is None:
-        raise ValueError("模板数据无效，请检查上游导入模板节点")
+    stem = Path(template_path).stem if template_path else "template"
+    out_name = _safe_template_output_name(params.get("out_name") or stem)
+    return str(get_exec_dir() / f"template_filled_{out_name}.xlsx")
 
-    sheet_name = params.get("sheet_name", wb.sheetnames[0])
-    start_row = params.get("start_row", "max_row + 1")
-    start_col = params.get("start_col", "1")
-    cols = params.get("col_list", ["*"])
-    col_names = params.get("col_names", [])
 
-    df_fill = df.copy()
+def _prepare_insert_dataframe(df, params):
+    cols = params.get("col_list") or ["*"]
+    col_names = params.get("col_names") or []
+
+    if cols == "*" or cols == ["*"]:
+        fill_df = df.copy()
+    else:
+        available = normalize_columns(df, cols, "col_name")
+        if not available:
+            raise ValueError(f"指定列在 DataFrame 中不存在: {cols}")
+        fill_df = df[available].copy()
+
+    rename_map = {}
     if col_names and any(col_names):
-        actual_cols = [c for c in cols if c != "*"]
-        available = [c for c in actual_cols if c in df.columns] if actual_cols else list(df.columns)
-        rename_map = {}
-        for i, col in enumerate(available):
+        for i, col in enumerate(fill_df.columns):
             if i < len(col_names) and col_names[i]:
                 rename_map[col] = col_names[i]
-        if rename_map:
-            df_fill = df_fill.rename(columns=rename_map)
+    if rename_map:
+        fill_df = fill_df.rename(columns=rename_map)
 
+    return fill_df
+
+
+def _build_insert_block_payload(engine, params, node_id):
+    df = engine.get_df(params.get("df_id"))
+    fill_df = _prepare_insert_dataframe(df, params)
+    return {
+        "_template_insert": True,
+        "node_id": node_id,
+        "df": fill_df,
+        "sheet_name": params.get("sheet_name") or "",
+        "start_row": params.get("start_row") or "max_row + 1",
+        "end_row": params.get("end_row") or "",
+        "start_col": params.get("start_col") or "1",
+        "end_col": params.get("end_col") or "",
+        "write_header": params.get("write_header", True),
+    }
+
+
+def _apply_insert_payload(wb, payload):
+    sheet_name = payload.get("sheet_name") or wb.sheetnames[0]
     success, msg = insert_into_template(
         wb,
-        df_fill,
+        payload["df"],
         sheet_name,
-        start_row,
-        start_col,
-        columns=cols,
-        write_header=params.get("write_header", True),
-        inherit_style=True,
+        payload.get("start_row") or "max_row + 1",
+        payload.get("start_col") or "1",
+        columns=["*"],
+        write_header=payload.get("write_header", True),
+        inherit_style=False,
+        end_row_expr=payload.get("end_row") or None,
+        end_col_expr=payload.get("end_col") or None,
     )
     if not success:
         raise ValueError(msg)
+    return msg
 
-    engine.log(f"    - [插入成功] {msg}")
-    # 模板对象需要继续向下游传递，因此输出仍是同一个模板 entry。
+
+def run_import_template(engine, params, node_id):
+    template_path = params.get("template_path")
+    actual_path = engine.file_mapping.get(template_path, template_path)
+    if not actual_path or not os.path.exists(actual_path):
+        raise ValueError(f"模板文件不存在: {actual_path}")
+
+    wb, meta = load_template(actual_path)
+    insert_block_ids = params.get("insert_block_ids", []) or []
+    engine.log(
+        f"    - 模板已加载: {os.path.basename(actual_path)}"
+        f" ({len(meta['sheet_names'])} 个工作表)"
+    )
+
+    for index, insert_id in enumerate(insert_block_ids, start=1):
+        payload = engine.data_pool.get(insert_id)
+        if not isinstance(payload, dict) or not payload.get("_template_insert"):
+            raise ValueError(f"插入模板节点输出无效: {insert_id}")
+        msg = _apply_insert_payload(wb, payload)
+        engine.log(f"    - [区域 {index}] {msg}")
+
+    meta = build_template_metadata(wb, actual_path)
+    tmpl_entry = {"_wb": wb, "_meta": meta, "_template_path": actual_path}
+
+    output_path = _resolve_template_output_path(
+        params, actual_path, has_insert_blocks=bool(insert_block_ids)
+    )
+    if output_path:
+        _, final_path = save_template(wb, output_path)
+        tmpl_entry["_saved_path"] = final_path
+        engine.log(f"    - [模板保存成功] 文件已保存至: {final_path}")
+
     engine.data_pool[node_id] = tmpl_entry
 
 
-def run_template_export(engine, params, node_id):
-    """Best-effort compatibility for historical template export nodes."""
-    template_id = params.get("template_id") or params.get("df_id")
-    if not template_id or template_id not in engine.data_pool:
-        engine.log("    - [兼容] 未找到模板输出对象，跳过旧版模板导出节点")
+def run_insert_block(engine, params, node_id):
+    payload = _build_insert_block_payload(engine, params, node_id)
+    template_id = params.get("template_id")
+
+    if template_id:
+        if template_id not in engine.data_pool:
+            raise ValueError(f"模板表未找到: {template_id}")
+        tmpl_entry = engine.data_pool[template_id]
+        wb = tmpl_entry.get("_wb") if isinstance(tmpl_entry, dict) else None
+        if wb is None:
+            raise ValueError("模板数据无效，请检查上游导入模板节点")
+        msg = _apply_insert_payload(wb, payload)
+        engine.log(f"    - [插入成功] {msg}")
+        engine.data_pool[node_id] = tmpl_entry
         return
 
-    tmpl_entry = engine.data_pool[template_id]
-    wb = tmpl_entry.get("_wb") if isinstance(tmpl_entry, dict) else None
-    if wb is None:
-        engine.log("    - [兼容] 模板输出对象无效，跳过旧版模板导出节点")
-        return
-
-    output_path = params.get("output_path") or params.get("file_path") or params.get("save_path")
-    if not output_path:
-        engine.log("    - [兼容] 旧版模板导出节点未配置保存路径，已跳过")
-        return
-
-    _, final_path = save_template(wb, output_path)
-    engine.log(f"    - [模板导出成功] 文件已保存至: {final_path}")
-    engine.data_pool[node_id] = tmpl_entry
+    engine.data_pool[node_id] = payload
+    engine.log(
+        "    - 已准备模板写入区域: "
+        f"{payload.get('sheet_name') or '首个工作表'} "
+        f"行{payload.get('start_row')}:{payload.get('end_row') or '*'} "
+        f"列{payload.get('start_col')}:{payload.get('end_col') or '*'}"
+    )
 
 
 ACTION_HANDLERS = {
@@ -410,6 +501,7 @@ ACTION_HANDLERS = {
     "rank_col": run_rank_col,
     "sort_data": run_sort_data,
     "calc_col": run_calc_col,
+    "code_block": run_code_block,
     "clean_data": run_clean_data,
     "pivot_table": run_pivot_table,
     "melt_table": run_melt_table,
@@ -423,7 +515,6 @@ ACTION_HANDLERS = {
     "export_df": run_export_df,
     "import_template": run_import_template,
     "insert_block": run_insert_block,
-    "template_export": run_template_export,
 }
 
 

@@ -1,7 +1,6 @@
 """Operator panels for importing and exporting tabular data."""
 
 import os
-import sys
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -14,6 +13,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
 )
 
+from core.app_paths import get_exec_dir
 from core.dataframe_ops import CSV_SHEET_LABEL, export_df, read_source_file
 from operators.base_panel import BaseToolPanel, QLineEdit
 
@@ -49,6 +49,8 @@ class LoadFilePanel(BaseToolPanel):
         path_layout.addWidget(btn_browse)
 
         fl = QFormLayout()
+        fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         fl.addRow("文件路径:", path_layout)
         self.sheet_combo = QComboBox()
         self.sheet_combo.currentTextChanged.connect(self.auto_update_out_name)
@@ -88,7 +90,8 @@ class LoadFilePanel(BaseToolPanel):
             try:
                 import pandas as pd
 
-                sheets = pd.ExcelFile(path).sheet_names
+                with pd.ExcelFile(path) as excel:
+                    sheets = list(excel.sheet_names)
                 self.sheet_combo.addItems(sheets)
             except Exception:
                 pass
@@ -175,6 +178,8 @@ class ExportNodePanel(BaseToolPanel):
         self.custom_layout.addWidget(card)
 
         fl = QFormLayout()
+        fl.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        fl.setRowWrapPolicy(QFormLayout.WrapLongRows)
         self.fname_input = QLineEdit("Export_Result.xlsx")
         fl.addRow("导出文件名:", self.fname_input)
 
@@ -189,8 +194,7 @@ class ExportNodePanel(BaseToolPanel):
         fl.addRow("保存至目录:", path_layout)
         inner.addLayout(fl)
 
-        hint = QLabel("支持 .xlsx 和 .csv 格式。目录留空则保存至程序根目录。")
-        hint.setStyleSheet("color: #888; font-size: 11px; padding-top: 4px;")
+        hint = self._make_hint_label("支持 .xlsx 和 .csv 格式。目录留空则保存至程序根目录。")
         inner.addWidget(hint)
 
     def browse_dir(self):
@@ -207,10 +211,6 @@ class ExportNodePanel(BaseToolPanel):
             self.fname_input.setText(p["file_name"])
         if "folder_path" in p:
             self.dir_input.setText(p["folder_path"])
-        if "target_path" in p and not p.get("file_name"):
-            full_path = p["target_path"]
-            self.fname_input.setText(os.path.basename(full_path))
-            self.dir_input.setText(os.path.dirname(full_path))
 
     def get_custom_params(self):
         return {
@@ -224,11 +224,7 @@ class ExportNodePanel(BaseToolPanel):
         if not p["df_name"]:
             return QMessageBox.warning(self, "错误", "未选择导出表")
 
-        default_dir = (
-            Path(sys.executable).parent
-            if getattr(sys, "frozen", False)
-            else Path(__file__).parent.absolute()
-        )
+        default_dir = get_exec_dir()
         fname = p.get("file_name") or "Result.xlsx"
         fdir = p.get("folder_path", "").strip()
 

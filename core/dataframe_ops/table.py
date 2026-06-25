@@ -2,6 +2,8 @@
 
 import pandas as pd
 
+from core.dataframe_ops.columns import flatten_dataframe_columns
+
 from core.dataframe_ops.columns import normalize_columns
 
 
@@ -17,19 +19,28 @@ def left_join(
     mapping_dict=None,
 ):
     df1 = df1.copy()
-    left_key_col = normalize_columns(df1, [left_key], key_type)[0]
-    right_key_col = normalize_columns(df2, [right_key], key_type)[0]
-    get_col_list = normalize_columns(df2, get_col, key_type)
+    df2_work = df2.copy() if mapping_dict else df2
+    left_keys = normalize_columns(df1, [left_key], key_type)
+    right_keys = normalize_columns(df2_work, [right_key], key_type)
+    get_col_list = normalize_columns(df2_work, get_col, key_type)
+    if not left_keys:
+        raise ValueError(f"左表关联键不存在: {left_key}")
+    if not right_keys:
+        raise ValueError(f"右表关联键不存在: {right_key}")
+    if get_col and not get_col_list:
+        raise ValueError(f"右表提取列不存在: {get_col}")
+    left_key_col = left_keys[0]
+    right_key_col = right_keys[0]
 
     actual_right_key = right_key_col
     if mapping_dict:
         tmp_col = f"__v_join_{right_key_col}__"
-        df2[tmp_col] = df2[right_key_col].map(mapping_dict).fillna(df2[right_key_col])
+        df2_work[tmp_col] = df2_work[right_key_col].map(mapping_dict).fillna(df2_work[right_key_col])
         actual_right_key = tmp_col
 
     dup_suffix = "_dup_drop_me"
     result = df1.merge(
-        df2[[actual_right_key] + get_col_list],
+        df2_work[[actual_right_key] + get_col_list],
         left_on=left_key_col,
         right_on=actual_right_key,
         how="left",
@@ -63,7 +74,7 @@ def left_join(
 def concat_rows(df1, df2, ignore_index=True):
     """Append two tables vertically."""
     result = pd.concat([df1, df2], axis=0, ignore_index=ignore_index)
-    return result
+    return flatten_dataframe_columns(result)
 
 
 def transpose_data(df):
@@ -73,4 +84,4 @@ def transpose_data(df):
         f"列{i + 1}" if str(c).startswith("列") else str(c)
         for i, c in enumerate(result.columns)
     ]
-    return result
+    return flatten_dataframe_columns(result)

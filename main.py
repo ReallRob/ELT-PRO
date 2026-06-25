@@ -1,7 +1,6 @@
 import sys
-import os
+import multiprocessing
 import json
-from pathlib import Path
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -14,17 +13,12 @@ from PyQt5.QtGui import QFont
 
 from ui.design.design_mode import DesignModeWidget
 from ui.execute.execute_mode import ExecuteModeWidget
+from core.app_paths import get_config_dir, get_workspace_config_path
+from core.qt_wheel_guard import install_combo_wheel_guard
 
 
-def get_executable_dir():
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).parent
-    else:
-        return Path(__file__).parent.absolute()
-
-
-CONFIG_DIR = get_executable_dir() / "config"
-CONFIG_FILE_PATH = CONFIG_DIR / "workspace_config.json"
+CONFIG_DIR = get_config_dir()
+CONFIG_FILE_PATH = get_workspace_config_path()
 
 
 class MainWindow(QMainWindow):
@@ -141,10 +135,12 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
     app = QApplication(sys.argv)
+    install_combo_wheel_guard(app)
 
     global_font = QFont("Microsoft YaHei", 10)
     app.setFont(global_font)

@@ -1,7 +1,7 @@
 """Toolbox widgets for the design canvas."""
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QFrame, QGroupBox, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QFrame, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from operator_registry import CATEGORY_ORDER, NODE_REGISTRY, get_operator_title
 
@@ -19,23 +19,23 @@ class _CollapsibleGroup(QWidget):
         self._layout.setSpacing(0)
 
         self._header_btn = QPushButton(f" ▾ {title}")
-        self._header_btn.setFixedHeight(28)
+        self._header_btn.setFixedHeight(30)
         self._header_btn.setCursor(Qt.PointingHandCursor)
         self._header_btn.setStyleSheet("""
             QPushButton {
-                background-color: #eceff1; border: none; border-radius: 3px;
+                background-color: #EEF3F6; border: 1px solid #E1E7EC; border-radius: 4px;
                 text-align: left; padding-left: 8px; font-size: 12px; font-weight: bold;
-                color: #455a64;
+                color: #344955;
             }
-            QPushButton:hover { background-color: #cfd8dc; }
+            QPushButton:hover { background-color: #E2EBF0; border-color: #CFD8DC; }
         """)
         self._header_btn.clicked.connect(self._toggle)
         self._layout.addWidget(self._header_btn)
 
         self._body = QWidget()
         self._body_layout = QVBoxLayout(self._body)
-        self._body_layout.setContentsMargins(2, 2, 2, 4)
-        self._body_layout.setSpacing(3)
+        self._body_layout.setContentsMargins(3, 4, 3, 6)
+        self._body_layout.setSpacing(4)
         self._layout.addWidget(self._body)
 
     def _toggle(self):
@@ -45,16 +45,17 @@ class _CollapsibleGroup(QWidget):
         self._header_btn.setText(f" {arrow} {self._title}")
 
     def add_button(self, action, config):
-        btn = QPushButton(f"  {config['title']}")
-        btn.setFixedHeight(30)
+        btn = QPushButton(config["title"])
+        btn.setFixedHeight(31)
         btn.setCursor(Qt.PointingHandCursor)
         btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: white; border: 1px solid #ddd; border-radius: 3px;
-                border-left: 3px solid {config['color']}; text-align: left; padding-left: 6px;
-                font-size: 11px;
+                background-color: #FFFFFF; border: 1px solid #DCE3EA; border-radius: 4px;
+                border-left: 3px solid {config['color']}; text-align: left; padding-left: 10px;
+                color: #263238; font-size: 11px;
             }}
-            QPushButton:hover {{ background-color: {config['color']}; color: white; }}
+            QPushButton:hover {{ background-color: #F8FBFD; border-color: #B9C6D2; }}
+            QPushButton:pressed {{ background-color: #EEF5F8; }}
         """)
         btn.clicked.connect(lambda checked, a=action: self._emit_add(a))
         self._body_layout.addWidget(btn)
@@ -68,17 +69,20 @@ class _CollapsibleGroup(QWidget):
             w = w.parent()
 
 
-class ToolboxWidget(QGroupBox):
+class ToolboxWidget(QWidget):
     add_node_requested = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
-        self.setTitle("工具箱")
-        self.setStyleSheet(
-            "QGroupBox { border: 1px solid #ddd; background-color: #f8f9fa; border-radius: 4px; font-weight: bold; padding-top: 18px; }"
-        )
-        self.setMinimumWidth(155)
-        self.setMaximumWidth(220)
+        self.setObjectName("toolbox_root")
+        self.setStyleSheet("""
+            QWidget#toolbox_root {
+                background-color: #F8FAFC;
+                border: none;
+            }
+        """)
+        self.setMinimumWidth(170)
+        self.setMaximumWidth(260)
         self._hidden = set()
         self._naming_style = "默认"
         self._custom_names = {}
@@ -89,8 +93,8 @@ class ToolboxWidget(QGroupBox):
     def init_ui(self):
         if self._main_layout is None:
             self._main_layout = QVBoxLayout(self)
-            self._main_layout.setContentsMargins(4, 4, 4, 4)
-            self._main_layout.setSpacing(4)
+            self._main_layout.setContentsMargins(6, 6, 6, 6)
+            self._main_layout.setSpacing(6)
         else:
             while self._main_layout.count():
                 item = self._main_layout.takeAt(0)
@@ -102,12 +106,18 @@ class ToolboxWidget(QGroupBox):
         self._scroll_area.setFrameShape(QFrame.NoFrame)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self._scroll_area.setStyleSheet("QScrollArea { background-color: transparent; }")
+        self._scroll_area.setStyleSheet("""
+            QScrollArea { background-color: transparent; border: none; }
+            QScrollBar:vertical { width: 10px; background: transparent; margin: 2px; }
+            QScrollBar::handle:vertical { background: #CBD5E1; border-radius: 5px; min-height: 36px; }
+            QScrollBar::handle:vertical:hover { background: #94A3B8; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; border: none; }
+        """)
 
         content_widget = QWidget()
         layout = QVBoxLayout(content_widget)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
 
         self._groups = {}
         for cat_name in CATEGORY_ORDER:

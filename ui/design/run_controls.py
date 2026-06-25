@@ -53,8 +53,9 @@ class RunControlsMixin:
                     item.is_dirty = False
                     item.update()
             QMessageBox.information(self, "成功", "流水线跑批完毕！")
-            if self.chk_auto_follow.isChecked() and self.current_selected_node:
-                self.on_canvas_node_selected(self.current_selected_node)
+            node = self._current_live_node() if hasattr(self, "_current_live_node") else self.current_selected_node
+            if self.chk_auto_follow.isChecked() and node is not None:
+                self.on_canvas_node_selected(node)
             elif not self.chk_auto_follow.isChecked():
                 table_name = self.combo_preview_tables.currentText()
                 if table_name and table_name != "暂无数据":

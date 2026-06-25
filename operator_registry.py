@@ -2,6 +2,7 @@
 
 from operators.panels.aggregate_panels import DescribePanel, GroupPanel, MeltPanel, PivotPanel
 from operators.panels.calc_panels import CalcPanel, CumsumPanel, PctChangePanel, RankPanel
+from operators.panels.code_block_panel import CodeBlockPanel
 from operators.panels.io_panels import ExportNodePanel, LoadFilePanel
 from operators.panels.table_panels import ConcatPanel, JoinPanel
 from operators.panels.template_panels import ImportTemplatePanel, InsertBlockPanel
@@ -17,7 +18,7 @@ from operators.panels.transform_panels import (
 from operators.panels.advanced_param_mapping import AdvancedParamMappingPanel
 
 NODE_REGISTRY = {
-    "advanced_param_mapping": {"title": "参数高级映射", "color": "#455A64", "panel_class": AdvancedParamMappingPanel, "category": "参数控制"},
+    "advanced_param_mapping": {"title": "参数输入", "color": "#455A64", "panel_class": AdvancedParamMappingPanel, "category": "参数控制"},
     "load_file":       {"title": "数据源导入", "color": "#1976D2", "panel_class": LoadFilePanel,       "category": "输入输出"},
     "export_df":       {"title": "自动导出",   "color": "#607D8B", "panel_class": ExportNodePanel,      "category": "输入输出"},
     "get_col_data":    {"title": "提取列",     "color": "#009688", "panel_class": ExtractPanel,         "category": "数据变换"},
@@ -39,6 +40,7 @@ NODE_REGISTRY = {
     "pct_change_data": {"title": "环比计算",   "color": "#F4511E", "panel_class": PctChangePanel,       "category": "计算列"},
     "import_template": {"title": "导入模板",   "color": "#795548", "panel_class": ImportTemplatePanel,  "category": "实验功能"},
     "insert_block":    {"title": "插入模板",   "color": "#FF6F00", "panel_class": InsertBlockPanel,     "category": "实验功能"},
+    "code_block":      {"title": "代码块",     "color": "#7C3AED", "panel_class": CodeBlockPanel,      "category": "实验功能"},
 }
 
 CATEGORY_ORDER = ["参数控制", "输入输出", "数据变换", "汇总统计", "表操作", "计算列", "实验功能"]
@@ -46,6 +48,7 @@ CATEGORY_ORDER = ["参数控制", "输入输出", "数据变换", "汇总统计"
 OPERATOR_NAME_STYLES = {
     "默认": {},
     "Excel 风格": {
+        "advanced_param_mapping": "参数输入",
         "load_file": "导入数据",
         "get_col_data": "选择列",
         "filter_data": "条件筛选",
@@ -67,8 +70,10 @@ OPERATOR_NAME_STYLES = {
         "export_df": "导出文件",
         "import_template": "导入模板",
         "insert_block": "填充模板",
+        "code_block": "代码块",
     },
     "WPS 风格": {
+        "advanced_param_mapping": "参数输入",
         "load_file": "导入数据表",
         "get_col_data": "提取列数据",
         "filter_data": "高级筛选",
@@ -90,6 +95,7 @@ OPERATOR_NAME_STYLES = {
         "export_df": "输出文件",
         "import_template": "加载模板",
         "insert_block": "写入模板",
+        "code_block": "代码块",
     },
 }
 

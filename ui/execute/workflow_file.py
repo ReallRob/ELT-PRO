@@ -7,6 +7,7 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from ui.dialogs.data_source_mapping import DataSourceMappingDialog
 from ui.execute.styles import RUN_BUTTON_ACTIVE_STYLE
+from ui.design.workflow_io import validate_workflow_config
 
 
 class ExecuteWorkflowFileMixin:
@@ -41,12 +42,22 @@ class ExecuteWorkflowFileMixin:
             return
 
         try:
+            changed_paths = {}
             for step in self.workflow_config.get("steps", []):
-                if step["action"] == "load_file":
+                if step["action"] in ("load_file", "import_template"):
                     p = step["params"]
-                    old_path = p.get("file_path")
+                    path_key = "template_path" if step["action"] == "import_template" else "file_path"
+                    old_path = p.get(path_key)
                     if old_path in self.file_mapping:
-                        p["file_path"] = self.file_mapping[old_path]
+                        new_path = self.file_mapping[old_path]
+                        p[path_key] = new_path
+                        changed_paths[old_path] = new_path
+
+            manifest = self.workflow_config.get("run_manifest") or {}
+            for resource in manifest.get("file_resources", []) or []:
+                path = resource.get("path")
+                if path in changed_paths:
+                    resource["path"] = changed_paths[path]
 
             with open(self.current_workflow_path, "w", encoding="utf-8") as f:
                 json.dump(self.workflow_config, f, ensure_ascii=False, indent=4)
@@ -75,6 +86,7 @@ class ExecuteWorkflowFileMixin:
 
         with open(file_path, "r", encoding="utf-8") as f:
             self.workflow_config = json.load(f)
+        validate_workflow_config(self.workflow_config)
 
         self.current_workflow_path = file_path
         self._rebuild_file_mappings(saved_mappings)
@@ -88,12 +100,13 @@ class ExecuteWorkflowFileMixin:
         self.file_context.clear()
 
         for step in self.workflow_config.get("steps", []):
-            if step["action"] != "load_file":
+            if step["action"] not in ("load_file", "import_template"):
                 continue
 
-            orig_path = step["params"].get("file_path")
+            params = step["params"]
+            orig_path = params.get("file_path") or params.get("template_path")
             out_name = step.get("out_name", "未知节点")
-            sheet_name = step["params"].get("sheet_name", "默认")
+            sheet_name = params.get("sheet_name", "模板" if step["action"] == "import_template" else "默认")
 
             if not orig_path:
                 continue
@@ -125,9 +138,9 @@ class ExecuteWorkflowFileMixin:
         self.info_name.setText(wf_name)
         self.info_steps.setText(f"步骤: {steps_count}")
         files = [
-            s["params"].get("file_path", "?")
+            s["params"].get("file_path") or s["params"].get("template_path", "?")
             for s in self.workflow_config.get("steps", [])
-            if s.get("action") == "load_file"
+            if s.get("action") in ("load_file", "import_template")
         ]
         if files:
             self.info_files.setText("\n".join(os.path.basename(f) for f in files))
