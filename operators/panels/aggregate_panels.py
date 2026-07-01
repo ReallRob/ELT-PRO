@@ -1,205 +1,24 @@
 """Operator panels: aggregate_panels."""
 
-import os
-import sys
-import pandas as pd
-from pathlib import Path
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QLabel,
-    QMenu,
-    QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from operators.base_panel import BaseToolPanel, ParameterTextEdit, QLineEdit
-from core.dataframe_ops import (
-    calc_col,
-    clean_data,
-    concat_rows,
-    cumsum_data,
-    describe_data,
-    drop_duplicates,
-    export_df,
-    filter_data,
-    get_col_data,
-    group_calc,
-    left_join,
-    melt_table,
-    normalize_columns,
-    pct_change_data,
-    pivot_table,
-    rank_col,
-    sample_data,
-    sort_data,
-    transpose_data,
-)
+from operators.base_panel import BaseToolPanel, QLineEdit
+from operators.panels.flow_panels import BatchMapFlowPanel
 
 
-class GroupPanel(BaseToolPanel):
-    theme_color = "#673AB7"
-    action_name = "汇总"
-
-    def init_custom_ui(self):
-        card1, inner1 = self._make_card("分组依据列")
-        self.custom_layout.addWidget(card1)
-        self.group_keys_layout = QVBoxLayout()
-        self.group_keys_layout.setSpacing(4)
-        inner1.addLayout(self.group_keys_layout)
-        self.add_group_key_row()
-        btn_add_key = self._make_add_button("+ 添加分组列")
-        btn_add_key.clicked.connect(lambda: self.add_group_key_row())
-        inner1.addWidget(btn_add_key)
-
-        card2, inner2 = self._make_card("聚合统计规则")
-        self.custom_layout.addWidget(card2)
-        self.rules_layout = QVBoxLayout()
-        self.rules_layout.setSpacing(4)
-        inner2.addLayout(self.rules_layout)
-        self.add_rule_row()
-        btn_add = self._make_add_button("+ 添加聚合规则")
-        btn_add.clicked.connect(lambda: self.add_rule_row())
-        inner2.addWidget(btn_add)
-        hint = self._make_hint_label("sum 求和，mean 平均，max/min 最大最小，count 计数，first 取第一行。")
-        inner2.addWidget(hint)
-
-    def clear_custom_ui(self):
-        self.clear_dynamic_layout(self.group_keys_layout)
-        self.add_group_key_row()
-        self.clear_dynamic_layout(self.rules_layout)
-        self.add_rule_row()
-
-    def add_group_key_row(self, col=""):
-        row = QWidget()
-        l = QHBoxLayout(row)
-        l.setContentsMargins(0, 0, 0, 0)
-        col_combo = self._make_col_combo("分组列")
-        col_combo.setObjectName("group_col")
-        self._set_col_name(col_combo, str(col))
-        btn_rm = self._make_delete_button()
-        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
-        l.addWidget(col_combo, stretch=1)
-        l.addWidget(btn_rm)
-        self.group_keys_layout.addWidget(row)
-
-    def add_rule_row(self, col="", func="sum", rename=""):
-        row = QWidget()
-        outer = QVBoxLayout(row)
-        outer.setContentsMargins(0, 0, 0, 6)
-        outer.setSpacing(6)
-        col_row = QHBoxLayout()
-        col_row.setContentsMargins(0, 0, 0, 0)
-        col_row.setSpacing(6)
-        col_combo = self._make_col_combo("运算列")
-        col_combo.setObjectName("col")
-        col_combo.setMinimumWidth(180)
-        self._set_col_name(col_combo, str(col))
-
-        option_row = QHBoxLayout()
-        option_row.setContentsMargins(0, 0, 0, 0)
-        option_row.setSpacing(6)
-        f_combo = QComboBox()
-        f_combo.setObjectName("func")
-        f_combo.addItems(["sum", "mean", "max", "min", "count", "first"])
-        f_combo.setCurrentText(func)
-        f_combo.setMinimumWidth(86)
-        f_combo.setMaximumWidth(112)
-        r_input = QLineEdit(str(rename))
-        r_input.setObjectName("rename")
-        r_input.setPlaceholderText("重命名(可选)")
-        btn_rm = self._make_delete_button()
-        btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
-        col_row.addWidget(col_combo, stretch=1)
-        col_row.addWidget(btn_rm)
-        option_row.addWidget(self._inline_label("方式"))
-        option_row.addWidget(f_combo)
-        option_row.addWidget(self._inline_label("命名"))
-        option_row.addWidget(r_input, stretch=1)
-        outer.addLayout(col_row)
-        outer.addLayout(option_row)
-        self.rules_layout.addWidget(row)
-
-    def set_custom_params(self, p):
-        g_keys = p.get("group_key", [])
-        if g_keys:
-            self.clear_dynamic_layout(self.group_keys_layout)
-            for k in g_keys:
-                self.add_group_key_row(k)
-        rules = p.get("agg_rules", [])
-        if rules:
-            self.clear_dynamic_layout(self.rules_layout)
-            for r in rules:
-                self.add_rule_row(r.get("col"), r.get("func"), r.get("rename"))
-
-    def get_custom_params(self):
-        g_keys = []
-        for i in range(self.group_keys_layout.count()):
-            w = self.group_keys_layout.itemAt(i).widget()
-            if w:
-                combo = w.findChild(QComboBox, "group_col")
-                if combo:
-                    c = self._get_col_name(combo)
-                    if c:
-                        g_keys.append(c)
-        rules = []
-        for i in range(self.rules_layout.count()):
-            w = self.rules_layout.itemAt(i).widget()
-            if w:
-                c = self._get_col_name(w.findChild(QComboBox, "col"))
-                f = w.findChild(QComboBox, "func").currentText()
-                r = w.findChild(QLineEdit, "rename").text().strip()
-                if c:
-                    rules.append({"col": c, "func": f, "rename": r})
-        return {"group_key": g_keys, "agg_rules": rules}
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["group_key"]:
-            return QMessageBox.warning(self, "错误", "缺少必要参数")
-        col_dict = {}
-        for r in p["agg_rules"]:
-            c, f = r["col"], r["func"]
-            if c in col_dict:
-                (
-                    col_dict[c].append(f)
-                    if isinstance(col_dict[c], list)
-                    else col_dict.update({c: [col_dict[c], f]})
-                )
-            else:
-                col_dict[c] = f
-        out_name = p["out_name"] or f"{p['df_name']}_{self.action_name}"
-        try:
-            df = group_calc(
-                self.data_pool[p["df_name"]], p["group_key"], col_dict, p["col_type"]
-            )
-            rename_dict = {}
-            for rule in p["agg_rules"]:
-                if rule["rename"]:
-                    actual_cols = normalize_columns(
-                        self.data_pool[p["df_name"]], [rule["col"]], p["col_type"]
-                    )
-                    if actual_cols:
-                        rename_dict[f"{actual_cols[0]}_{rule['func']}"] = rule["rename"]
-            if rename_dict:
-                df = df.rename(columns=rename_dict)
-            self.step_recorded.emit("group_calc", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
-
-class PivotPanel(BaseToolPanel):
+class PivotPanel(BatchMapFlowPanel):
     theme_color = "#8E24AA"
     action_name = "数据透视"
+    output_suffix = "透视"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("透视配置")
         self.custom_layout.addWidget(card)
 
@@ -287,25 +106,13 @@ class PivotPanel(BaseToolPanel):
         if "margins" in p:
             self.margin_combo.setCurrentIndex(0 if p["margins"] else 1)
 
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["index_cols"] or not p["columns_col"] or not p["values_col"]:
-            return QMessageBox.warning(self, "错误", "请填写行标签、列标签和统计值")
-        out_name = p["out_name"] or f"{p['df_name']}_透视"
-        try:
-            df = pivot_table(self.data_pool[p["df_name"]],
-                p["index_cols"], p["columns_col"], p["values_col"],
-                p["aggfunc"], p["fill_value"], p["margins"], p["col_type"])
-            self.step_recorded.emit("pivot_table", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
 
-
-class MeltPanel(BaseToolPanel):
+class MeltPanel(BatchMapFlowPanel):
     theme_color = "#26A69A"
     action_name = "逆透视"
+    output_suffix = "逆透视"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("逆透视配置")
         self.custom_layout.addWidget(card)
 
@@ -402,18 +209,6 @@ class MeltPanel(BaseToolPanel):
         if "value_name" in p:
             self.val_name_input.setText(p["value_name"])
 
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["value_cols"]:
-            return QMessageBox.warning(self, "错误", "请填写融合列")
-        out_name = p["out_name"] or f"{p['df_name']}_逆透视"
-        try:
-            df = melt_table(self.data_pool[p["df_name"]],
-                p["id_cols"], p["value_cols"], p["var_name"], p["value_name"], p["col_type"])
-            self.step_recorded.emit("melt_table", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
 
 class DescribePanel(BaseToolPanel):
     use_type = False
@@ -479,14 +274,3 @@ class DescribePanel(BaseToolPanel):
             self.clear_dynamic_layout(self.pct_layout)
             for value in p["percentiles"]:
                 self.add_pct_row(str(value))
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"]:
-            return QMessageBox.warning(self, "错误", "缺少目标表")
-        out_name = p["out_name"] or f"{p['df_name']}_描述"
-        try:
-            df = describe_data(self.data_pool[p["df_name"]], p.get("percentiles"))
-            self.step_recorded.emit("describe_data", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))

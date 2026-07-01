@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 from ui.dialogs.data_source_mapping import DataSourceMappingDialog
 from ui.execute.styles import RUN_BUTTON_ACTIVE_STYLE
 from ui.design.workflow_io import validate_workflow_config
+from core.workflow.schema import migrate_workflow_config, step_display_name
 
 
 class ExecuteWorkflowFileMixin:
@@ -86,6 +87,7 @@ class ExecuteWorkflowFileMixin:
 
         with open(file_path, "r", encoding="utf-8") as f:
             self.workflow_config = json.load(f)
+        self.workflow_config = migrate_workflow_config(self.workflow_config)
         validate_workflow_config(self.workflow_config)
 
         self.current_workflow_path = file_path
@@ -105,7 +107,7 @@ class ExecuteWorkflowFileMixin:
 
             params = step["params"]
             orig_path = params.get("file_path") or params.get("template_path")
-            out_name = step.get("out_name", "未知节点")
+            out_name = step_display_name(step, "未知节点")
             sheet_name = params.get("sheet_name", "模板" if step["action"] == "import_template" else "默认")
 
             if not orig_path:

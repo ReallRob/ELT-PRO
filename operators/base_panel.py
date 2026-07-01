@@ -29,8 +29,8 @@ QLineEdit = ParameterTextInput
 
 
 class BaseToolPanel(QWidget):
-    step_recorded = pyqtSignal(str, dict, object, str)
     save_requested = pyqtSignal(str, dict)
+    run_requested = pyqtSignal(str, dict)
 
     use_df = True
     use_type = True
@@ -53,6 +53,10 @@ class BaseToolPanel(QWidget):
         self._panel_update_depth = 0
         self._pending_df_summary_refresh = False
         self._pending_col_combo_refresh = False
+        self._incoming_tables = []
+        self._incoming_outputs = []
+        self._saved_basic_input = None
+        self._saved_basic_output = None
         self._init_base_ui()
 
     @staticmethod
@@ -486,17 +490,22 @@ class BaseToolPanel(QWidget):
         self.top_form.setHorizontalSpacing(12)
         self.top_form.setVerticalSpacing(8)
         self.top_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        has_top = self.use_df or self.use_type
+        has_top = True
         if has_top:
             top_card, top_inner = self._make_card("基础配置")
             self.main_layout.addWidget(top_card)
             top_inner.addLayout(self.top_form)
+
+        self.operation_name_input = QLineEdit()
+        self.operation_name_input.setPlaceholderText(f"可选: 用于说明这个{self.action_name}节点做什么")
+        self.top_form.addRow("操作命名:", self.operation_name_input)
 
         if self.use_df:
             self.df_combo = QComboBox()
             self.combo_boxes_to_update.append(self.df_combo)
             self.df_combo.currentTextChanged.connect(self._on_df_combo_changed)
             self.top_form.addRow("目标表:", self.df_combo)
+            self._df_row_label = self.top_form.labelForField(self.df_combo)
             self.df_summary = QLabel("未选择数据表")
             self.df_summary.setObjectName("df_summary")
             self.top_form.addRow("", self.df_summary)
@@ -529,6 +538,7 @@ class BaseToolPanel(QWidget):
                 f"可选: 默认命名为 [目标表_{self.action_name}]"
             )
             self.bottom_form.addRow("结果命名:", self.out_input)
+            self._out_row_label = self.bottom_form.labelForField(self.out_input)
 
         self.main_layout.addStretch()
         self.scroll_area.setWidget(self.content_widget)
@@ -566,14 +576,12 @@ class BaseToolPanel(QWidget):
         ok, _ = self._validate()
         if not ok:
             return
-        self._resolve_params_on_get = True
-        self._last_raw_params = None
         try:
-            self.execute()
+            params = self.get_params()
         except Exception as exc:
-            QMessageBox.warning(self, "参数解析失败", str(exc))
-        finally:
-            self._resolve_params_on_get = False
+            QMessageBox.warning(self, "运行配置失败", str(exc))
+            return
+        self.run_requested.emit(self._panel_action_key or self.action_name, copy.deepcopy(params))
 
     def _on_save_config(self):
         self._emit_save_requested(show_error=True)
@@ -594,8 +602,123 @@ class BaseToolPanel(QWidget):
         return True
 
     def _on_df_combo_changed(self, *_):
+        self._remember_current_input_ref()
         self._refresh_df_summary()
         self._refresh_col_combos()
+
+    def set_incoming_outputs(self, incoming_outputs):
+        self._incoming_outputs = [
+            item
+            for item in (incoming_outputs or [])
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        ]
+        self.update_combos([item["name"] for item in self._incoming_outputs])
+
+    def _input_ref_for_name(self, name):
+        target = str(name or "").strip()
+        for item in self._incoming_outputs:
+            if str(item.get("name") or "").strip() == target:
+                return item
+        return None
+
+    @staticmethod
+    def _input_ref_key(item):
+        return (
+            str((item or {}).get("source_node_id") or ""),
+            str((item or {}).get("source_output_id") or "out_1"),
+        )
+
+    def _input_ref_for_key(self, source_node_id, source_output_id):
+        target = (str(source_node_id or ""), str(source_output_id or "out_1"))
+        for item in self._incoming_outputs:
+            if self._input_ref_key(item) == target:
+                return item
+        return None
+
+    def _remember_current_input_ref(self):
+        if not hasattr(self, "df_combo"):
+            return
+        ref = self._input_ref_for_name(self.df_combo.currentText())
+        self.df_combo.setProperty("source_node_id", str((ref or {}).get("source_node_id") or ""))
+        self.df_combo.setProperty("source_output_id", str((ref or {}).get("source_output_id") or "out_1"))
+
+    def _current_input_ref(self):
+        if not hasattr(self, "df_combo"):
+            return None
+        ref = self._input_ref_for_key(
+            self.df_combo.property("source_node_id"),
+            self.df_combo.property("source_output_id"),
+        )
+        return ref or self._input_ref_for_name(self.df_combo.currentText())
+
+    def _saved_input_for_basic_field(self, params):
+        inputs = [item for item in (params or {}).get("inputs") or [] if isinstance(item, dict)]
+        return inputs[0] if inputs else None
+
+    def _saved_output_for_basic_field(self, params):
+        outputs = [item for item in (params or {}).get("outputs") or [] if isinstance(item, dict)]
+        return outputs[0] if outputs else None
+
+    def _set_basic_input_selection(self, input_item):
+        if not self.use_df or not hasattr(self, "df_combo") or not isinstance(input_item, dict):
+            return
+        name = str(input_item.get("name") or "").strip()
+        self._set_combo_items_preserving_text(
+            self.df_combo,
+            [self.df_combo.itemText(i) for i in range(self.df_combo.count())],
+            name,
+        )
+        self.df_combo.setProperty("source_node_id", str(input_item.get("source_node_id") or ""))
+        self.df_combo.setProperty("source_output_id", str(input_item.get("source_output_id") or "out_1"))
+        self._refresh_df_summary()
+
+    def _default_output_name(self, input_name):
+        base = str(input_name or "输入表").strip() or "输入表"
+        suffix = str(self.action_name or "结果").strip() or "结果"
+        return f"{base}_{suffix}"
+
+    def _flow_output_data_type(self):
+        if self._panel_action_key == "import_template":
+            return "workbook"
+        if self._panel_action_key == "insert_block":
+            return "workbook"
+        if self._panel_action_key == "save_template":
+            return "workbook"
+        return "table"
+
+    def _flow_input_data_type(self, ref):
+        return str(ref.get("data_type") or "table")
+
+    def _flow_params_from_basic_fields(self, params):
+        if not self.use_df:
+            return params
+        ref = self._current_input_ref()
+        if not ref:
+            return params
+        input_name = str(ref.get("name") or self.df_combo.currentText()).strip()
+        saved_output = self._saved_output_for_basic_field(params)
+        if not saved_output:
+            saved_output = self._saved_basic_output or {}
+        output_name = ""
+        if self.use_out and hasattr(self, "out_input"):
+            output_name = self.out_input.text().strip()
+        if not output_name and saved_output:
+            output_name = str(saved_output.get("name") or "").strip()
+        output_name = output_name or self._default_output_name(input_name)
+        output_type = self._flow_output_data_type()
+        prefs = copy.deepcopy(params.get("io_prefs") or {})
+        prefs["selected_input"] = {
+            "source_node_id": str(ref.get("source_node_id") or ""),
+            "source_output_id": str(ref.get("source_output_id") or "out_1"),
+            "name": input_name,
+            "role": "current",
+            "data_type": self._flow_input_data_type(ref),
+            "enabled": True,
+        }
+        prefs["output_name"] = output_name
+        prefs["output_data_type"] = str((saved_output or {}).get("data_type") or output_type)
+        params["io_prefs"] = prefs
+        return params
 
     def begin_panel_update(self):
         self._panel_update_depth += 1
@@ -639,30 +762,36 @@ class BaseToolPanel(QWidget):
     def set_params(self, p):
         self.begin_panel_update()
         try:
-            if self.use_df and "df_name" in p:
-                self.df_combo.setCurrentText(p["df_name"])
-                self._refresh_df_summary()
+            self._saved_basic_input = copy.deepcopy(self._saved_input_for_basic_field(p))
+            self._saved_basic_output = copy.deepcopy(self._saved_output_for_basic_field(p))
+            if hasattr(self, "operation_name_input"):
+                self.operation_name_input.setText(str(p.get("operation_name") or ""))
+            if self.use_df:
+                self._set_basic_input_selection(self._saved_input_for_basic_field(p))
             if self.use_type:
                 _type_map = {"col_name": "列名", "col_word": "字母", "col_index": "索引"}
                 ct = p.get("col_type", "")
                 if ct in _type_map:
                     self.type_combo.setCurrentText(_type_map[ct])
-            if self.use_out and "out_name" in p:
-                self.out_input.setText(p["out_name"])
+            if self.use_out and hasattr(self, "out_input"):
+                saved_output = self._saved_output_for_basic_field(p)
+                if saved_output:
+                    self.out_input.setText(str(saved_output.get("name") or ""))
             self.set_custom_params(p)
         finally:
             self.end_panel_update()
 
     def get_params(self):
         p = {}
-        if self.use_df:
-            p["df_name"] = self.df_combo.currentText()
+        if hasattr(self, "operation_name_input"):
+            operation_name = self.operation_name_input.text().strip()
+            if operation_name:
+                p["operation_name"] = operation_name
         if self.use_type:
             _type_map = {"列名": "col_name", "字母": "col_word", "索引": "col_index"}
             p["col_type"] = _type_map.get(self.type_combo.currentText(), "col_name")
-        if self.use_out:
-            p["out_name"] = self.out_input.text().strip()
         p.update(self.get_custom_params())
+        p = self._flow_params_from_basic_fields(p)
         if self._resolve_params_on_get:
             self._last_raw_params = copy.deepcopy(p)
             return clone_resolved_runtime_value(
@@ -676,6 +805,8 @@ class BaseToolPanel(QWidget):
     def clear_ui(self):
         self.begin_panel_update()
         try:
+            if hasattr(self, "operation_name_input"):
+                self.operation_name_input.clear()
             if self.use_out:
                 self.out_input.clear()
             self.clear_custom_ui()
@@ -769,7 +900,6 @@ class BaseToolPanel(QWidget):
                 Qt.ToolTipRole,
             )
         combo.setProperty("_col_display_type", new_mode)
-        combo.blockSignals(False)
 
         selected = -1
         if old_mode != new_mode:
@@ -786,7 +916,29 @@ class BaseToolPanel(QWidget):
         if selected >= 0:
             combo.setCurrentIndex(selected)
         elif old_text:
-            combo.setCurrentText(old_text)
+            combo.addItem(old_text, userData=old_ref or old_text)
+            fallback_index = combo.count() - 1
+            combo.setItemData(fallback_index, old_position, self._COL_POSITION_ROLE)
+            combo.setItemData(fallback_index, old_ref or old_text, self._COL_NAME_ROLE)
+            combo.setCurrentIndex(fallback_index)
+            if combo.isEditable() and combo.lineEdit():
+                combo.lineEdit().setText(old_text)
+        combo.blockSignals(False)
+
+    @staticmethod
+    def _set_combo_items_preserving_text(combo, items, preferred_text=None):
+        current = str(preferred_text if preferred_text is not None else combo.currentText()).strip()
+        item_list = [str(item) for item in (items or [])]
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItems(item_list)
+        if current:
+            if combo.findText(current) < 0:
+                combo.addItem(current)
+            combo.setCurrentText(current)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
 
     def _get_col_name(self, combo):
         """Return the column reference used by the current matching mode."""
@@ -1038,16 +1190,10 @@ class BaseToolPanel(QWidget):
     def update_combos(self, table_names):
         self.begin_panel_update()
         try:
+            self._incoming_tables = list(table_names or [])
             for combo in self.combo_boxes_to_update:
-                current = combo.currentText()
-                combo.blockSignals(True)
-                combo.clear()
-                combo.addItems(table_names)
-                if current in table_names:
-                    combo.setCurrentText(current)
-                elif combo.count() > 0:
-                    combo.setCurrentIndex(0)
-                combo.blockSignals(False)
+                self._set_combo_items_preserving_text(combo, table_names)
+            self._remember_current_input_ref()
             self._refresh_df_summary()
             self._refresh_col_combos()
         finally:
@@ -1065,5 +1211,5 @@ class BaseToolPanel(QWidget):
     def clear_custom_ui(self):
         pass
 
-    def execute(self):
-        pass
+    def execute_batch(self):
+        return False

@@ -2,7 +2,6 @@
 
 import json
 
-import pandas as pd
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -556,29 +555,3 @@ class AdvancedParamMappingPanel(BaseToolPanel):
             QMessageBox.warning(self, "参数配置错误", str(exc))
             return False, None
         return True, None
-
-    def execute(self):
-        try:
-            p = self.get_params()
-        except Exception as exc:
-            return QMessageBox.warning(self, "参数配置错误", str(exc))
-        rows = []
-        for param in p.get("rule_engine_config", {}).get("parameters", []):
-            rows.append({
-                "类型": "输入参数",
-                "名称": param.get("fieldName", ""),
-                "数据类型": param.get("dataType", ""),
-                "输入": param.get("input", ""),
-                "解析值": format_advanced_value(param.get("value", "")),
-            })
-        for rule in p.get("rule_engine_config", {}).get("rules", []):
-            for case in rule.get("cases", []):
-                rows.append({
-                    "类型": "映射分支",
-                    "名称": f"{rule.get('ruleName', '')} / {case.get('caseName', '')}",
-                    "数据类型": case.get("targetTransformer", {}).get("outputType", ""),
-                    "输入": case.get("sourceSelector", {}).get("expression", ""),
-                    "解析值": format_advanced_value(case.get("targetTransformer", {}).get("resolvedValue", "")),
-                })
-        df = pd.DataFrame(rows)
-        self.step_recorded.emit("advanced_param_mapping", p, df, "参数输入")

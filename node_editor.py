@@ -22,6 +22,7 @@ from PyQt5.QtGui import (
 )
 
 import utils
+from core.workflow.schema import BATCH_MAP_ACTIONS
 
 
 METADATA_NODE_TYPES = ("advanced_param_mapping",)
@@ -74,10 +75,10 @@ class NodeItem(QGraphicsItem):
         self.setZValue(1)
 
     def has_input_port(self):
-        return self.action_type not in ("load_file",) + METADATA_NODE_TYPES
+        return self.action_type not in ("load_file", "import_template") + METADATA_NODE_TYPES
 
     def has_output_port(self):
-        return self.action_type not in ("import_template",) + METADATA_NODE_TYPES
+        return self.action_type not in METADATA_NODE_TYPES
 
     def boundingRect(self):
         return QRectF(-10, -10, self.width + 20, self.height + 20)
@@ -296,7 +297,15 @@ class NodeCanvasScene(QGraphicsScene):
         """返回节点允许的最大输入连线数"""
         if node.action_type in ("load_file",) + METADATA_NODE_TYPES:
             return 0
-        if node.action_type in ("import_template", "code_block"):
+        if node.action_type == "import_template":
+            return 0
+        if node.action_type == "code_block":
+            return 10000
+        if node.action_type == "insert_block":
+            return 2
+        if node.action_type == "save_template":
+            return 1
+        if node.action_type in BATCH_MAP_ACTIONS:
             return 10000
         if node.action_type in ("left_join", "concat_rows"):
             return 2
@@ -321,14 +330,11 @@ class NodeCanvasScene(QGraphicsScene):
         return False
 
     def _is_semantic_edge_allowed(self, start_node, end_node):
-        if end_node.action_type == "import_template" and start_node.action_type != "insert_block":
-            QMessageBox.warning(None, "连线被拒绝", "导入模板只接收插入模板节点。")
+        if end_node.action_type == "import_template":
+            QMessageBox.warning(None, "连线被拒绝", "加载模板是模板主线源头，不接收上游输入。")
             return False
-        if start_node.action_type == "insert_block" and end_node.action_type != "import_template":
-            QMessageBox.warning(None, "连线被拒绝", "插入模板的右侧请连接到导入模板。")
-            return False
-        if end_node.action_type == "insert_block" and start_node.action_type == "import_template":
-            QMessageBox.warning(None, "连线被拒绝", "请改为 插入模板 -> 导入模板 的方向。")
+        if end_node.action_type == "save_template" and start_node.action_type not in {"import_template", "insert_block", "code_block"}:
+            QMessageBox.warning(None, "连线被拒绝", "保存模板只接收模板主线 workbook。")
             return False
         return True
 

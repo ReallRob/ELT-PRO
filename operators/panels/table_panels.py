@@ -1,53 +1,120 @@
 """Operator panels: table_panels."""
 
-import os
-import sys
-import pandas as pd
-from pathlib import Path
-from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (
     QComboBox,
-    QFileDialog,
-    QFormLayout,
-    QFrame,
     QHBoxLayout,
-    QLabel,
-    QMenu,
-    QMessageBox,
-    QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from operators.base_panel import BaseToolPanel, ParameterTextEdit, QLineEdit
-from core.dataframe_ops import (
-    calc_col,
-    clean_data,
-    concat_rows,
-    cumsum_data,
-    describe_data,
-    drop_duplicates,
-    export_df,
-    filter_data,
-    get_col_data,
-    group_calc,
-    left_join,
-    melt_table,
-    normalize_columns,
-    pct_change_data,
-    pivot_table,
-    rank_col,
-    sample_data,
-    sort_data,
-    transpose_data,
-)
+from operators.base_panel import BaseToolPanel, QLineEdit
+from core.workflow.schema import action_suffix
 
 
 class JoinPanel(BaseToolPanel):
     use_df = False
     theme_color = "#4CAF50"
     action_name = "连接"
+
+    def set_incoming_outputs(self, incoming_outputs):
+        self._incoming_outputs = [
+            item
+            for item in (incoming_outputs or [])
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+            and str(item.get("data_type") or "table") == "table"
+        ]
+        names = [item["name"] for item in self._incoming_outputs]
+        for combo in (self.df1_combo, self.df2_combo):
+            self._set_combo_items_preserving_text(combo, names)
+            self._remember_combo_ref(combo)
+        self._refresh_col_combos()
+
+    def _input_ref_for_combo(self, combo):
+        key = (
+            str(combo.property("source_node_id") or "") if combo else "",
+            str(combo.property("source_output_id") or "out_1") if combo else "out_1",
+        )
+        for item in getattr(self, "_incoming_outputs", []) or []:
+            if self._input_key(item) == key:
+                return item
+        name = str(combo.currentText() if combo else "").strip()
+        for item in getattr(self, "_incoming_outputs", []) or []:
+            if str(item.get("name") or "").strip() == name:
+                return item
+        return None
+
+    @staticmethod
+    def _input_key(item):
+        return (
+            str((item or {}).get("source_node_id") or ""),
+            str((item or {}).get("source_output_id") or "out_1"),
+        )
+
+    def _set_combo_from_input(self, combo, input_item):
+        if combo is None or not isinstance(input_item, dict):
+            return
+        names = [item["name"] for item in getattr(self, "_incoming_outputs", []) or []]
+        name = str(input_item.get("name") or "").strip()
+        self._set_combo_items_preserving_text(combo, names, name)
+        combo.setProperty("source_node_id", str(input_item.get("source_node_id") or ""))
+        combo.setProperty("source_output_id", str(input_item.get("source_output_id") or "out_1"))
+
+    def _remember_combo_ref(self, combo):
+        if combo is None:
+            return
+        name = str(combo.currentText() or "").strip()
+        ref = next(
+            (
+                item
+                for item in getattr(self, "_incoming_outputs", []) or []
+                if str(item.get("name") or "").strip() == name
+            ),
+            None,
+        )
+        combo.setProperty("source_node_id", str((ref or {}).get("source_node_id") or ""))
+        combo.setProperty("source_output_id", str((ref or {}).get("source_output_id") or "out_1"))
+
+    def _saved_input_by_role(self, params, role, fallback_index):
+        inputs = [item for item in (params or {}).get("inputs") or [] if isinstance(item, dict)]
+        for item in inputs:
+            if item.get("role") == role:
+                return item
+        return inputs[fallback_index] if fallback_index < len(inputs) else None
+
+    def _saved_output_name(self, params):
+        outputs = [item for item in (params or {}).get("outputs") or [] if isinstance(item, dict)]
+        return str((outputs[0] if outputs else {}).get("name") or "")
+
+    def _set_binary_inputs_from_params(self, params):
+        self._set_combo_from_input(self.df1_combo, self._saved_input_by_role(params, "left", 0))
+        self._set_combo_from_input(self.df2_combo, self._saved_input_by_role(params, "right", 1))
+        if hasattr(self, "out_input"):
+            name = self._saved_output_name(params)
+            if name:
+                self.out_input.setText(name)
+
+    def _flow_io_prefs(self):
+        refs = [self._input_ref_for_combo(self.df1_combo), self._input_ref_for_combo(self.df2_combo)]
+        roles = ["left", "right"]
+        prefs_inputs = []
+        for ref, role in zip(refs, roles):
+            if not ref:
+                continue
+            prefs_inputs.append(
+                {
+                    "source_node_id": str(ref.get("source_node_id") or ""),
+                    "source_output_id": str(ref.get("source_output_id") or "out_1"),
+                    "name": str(ref.get("name") or ""),
+                    "role": role,
+                    "data_type": "table",
+                    "enabled": True,
+                }
+            )
+        out_name = self.out_input.text().strip() if hasattr(self, "out_input") else ""
+        if not out_name and prefs_inputs:
+            out_name = f"{prefs_inputs[0]['name']}_{action_suffix('left_join')}"
+        return {"inputs": prefs_inputs, "output_name": out_name, "output_data_type": "table"}
 
     def _refresh_col_combos(self):
         """JoinPanel 使用右表(df2_combo)的列名"""
@@ -67,7 +134,9 @@ class JoinPanel(BaseToolPanel):
     def init_custom_ui(self):
         self.df1_combo = QComboBox()
         self.df2_combo = QComboBox()
+        self.df1_combo.currentTextChanged.connect(lambda *_: self._remember_combo_ref(self.df1_combo))
         self.df2_combo.currentTextChanged.connect(self._refresh_col_combos)
+        self.df2_combo.currentTextChanged.connect(lambda *_: self._remember_combo_ref(self.df2_combo))
         self.combo_boxes_to_update.extend([self.df1_combo, self.df2_combo])
         self.top_form.insertRow(0, "主表 (左):", self.df1_combo)
         self.top_form.insertRow(1, "匹配表 (右):", self.df2_combo)
@@ -112,10 +181,7 @@ class JoinPanel(BaseToolPanel):
         self.rules_layout.addWidget(row)
 
     def set_custom_params(self, p):
-        if "df1_name" in p:
-            self.df1_combo.setCurrentText(p["df1_name"])
-        if "df2_name" in p:
-            self.df2_combo.setCurrentText(p["df2_name"])
+        self._set_binary_inputs_from_params(p)
         if "l_key" in p:
             self.l_key.setText(p["l_key"])
         if "r_key" in p:
@@ -137,52 +203,124 @@ class JoinPanel(BaseToolPanel):
                 if c:
                     get_cols.append(c)
                     col_names.append(r)
+        io_prefs = self._flow_io_prefs()
         return {
-            "df1_name": self.df1_combo.currentText(),
-            "df2_name": self.df2_combo.currentText(),
             "l_key": self.l_key.text().strip(),
             "r_key": self.r_key.text().strip(),
             "get_cols": get_cols,
             "col_names": col_names,
+            "io_prefs": io_prefs,
         }
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df1_name"] or not p["df2_name"]:
-            return QMessageBox.warning(self, "错误", "请选择表")
-        if not p["get_cols"]:
-            return QMessageBox.warning(self, "错误", "请配置提取列")
-        out_name = p["out_name"] or f"{p['df1_name']}_{self.action_name}"
-        try:
-            actual_cols = normalize_columns(
-                self.data_pool[p["df2_name"]], p["get_cols"], p["col_type"]
-            )
-            final_names = [
-                p["col_names"][i] if p["col_names"][i] else actual_cols[i]
-                for i in range(len(actual_cols))
-            ]
-            df = left_join(
-                self.data_pool[p["df1_name"]],
-                self.data_pool[p["df2_name"]],
-                p["l_key"],
-                p["r_key"],
-                p["get_cols"],
-                key_type=p["col_type"],
-                col_names=final_names,
-            )
-            self.step_recorded.emit("left_join", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
 
 class ConcatPanel(BaseToolPanel):
     use_df = False
     theme_color = "#5C6BC0"
     action_name = "纵向拼接"
 
+    def set_incoming_outputs(self, incoming_outputs):
+        self._incoming_outputs = [
+            item
+            for item in (incoming_outputs or [])
+            if isinstance(item, dict)
+            and str(item.get("name") or "").strip()
+            and str(item.get("data_type") or "table") == "table"
+        ]
+        names = [item["name"] for item in self._incoming_outputs]
+        for combo in (self.df1_combo, self.df2_combo):
+            self._set_combo_items_preserving_text(combo, names)
+            self._remember_combo_ref(combo)
+
+    def _input_ref_for_combo(self, combo):
+        key = (
+            str(combo.property("source_node_id") or "") if combo else "",
+            str(combo.property("source_output_id") or "out_1") if combo else "out_1",
+        )
+        for item in getattr(self, "_incoming_outputs", []) or []:
+            if self._input_key(item) == key:
+                return item
+        name = str(combo.currentText() if combo else "").strip()
+        for item in getattr(self, "_incoming_outputs", []) or []:
+            if str(item.get("name") or "").strip() == name:
+                return item
+        return None
+
+    @staticmethod
+    def _input_key(item):
+        return (
+            str((item or {}).get("source_node_id") or ""),
+            str((item or {}).get("source_output_id") or "out_1"),
+        )
+
+    def _set_combo_from_input(self, combo, input_item):
+        if combo is None or not isinstance(input_item, dict):
+            return
+        names = [item["name"] for item in getattr(self, "_incoming_outputs", []) or []]
+        name = str(input_item.get("name") or "").strip()
+        self._set_combo_items_preserving_text(combo, names, name)
+        combo.setProperty("source_node_id", str(input_item.get("source_node_id") or ""))
+        combo.setProperty("source_output_id", str(input_item.get("source_output_id") or "out_1"))
+
+    def _remember_combo_ref(self, combo):
+        if combo is None:
+            return
+        name = str(combo.currentText() or "").strip()
+        ref = next(
+            (
+                item
+                for item in getattr(self, "_incoming_outputs", []) or []
+                if str(item.get("name") or "").strip() == name
+            ),
+            None,
+        )
+        combo.setProperty("source_node_id", str((ref or {}).get("source_node_id") or ""))
+        combo.setProperty("source_output_id", str((ref or {}).get("source_output_id") or "out_1"))
+
+    def _saved_input_by_role(self, params, role, fallback_index):
+        inputs = [item for item in (params or {}).get("inputs") or [] if isinstance(item, dict)]
+        for item in inputs:
+            if item.get("role") == role:
+                return item
+        return inputs[fallback_index] if fallback_index < len(inputs) else None
+
+    def _saved_output_name(self, params):
+        outputs = [item for item in (params or {}).get("outputs") or [] if isinstance(item, dict)]
+        return str((outputs[0] if outputs else {}).get("name") or "")
+
+    def _set_binary_inputs_from_params(self, params):
+        self._set_combo_from_input(self.df1_combo, self._saved_input_by_role(params, "left", 0))
+        self._set_combo_from_input(self.df2_combo, self._saved_input_by_role(params, "right", 1))
+        if hasattr(self, "out_input"):
+            name = self._saved_output_name(params)
+            if name:
+                self.out_input.setText(name)
+
+    def _flow_io_prefs(self):
+        refs = [self._input_ref_for_combo(self.df1_combo), self._input_ref_for_combo(self.df2_combo)]
+        roles = ["left", "right"]
+        prefs_inputs = []
+        for ref, role in zip(refs, roles):
+            if not ref:
+                continue
+            prefs_inputs.append(
+                {
+                    "source_node_id": str(ref.get("source_node_id") or ""),
+                    "source_output_id": str(ref.get("source_output_id") or "out_1"),
+                    "name": str(ref.get("name") or ""),
+                    "role": role,
+                    "data_type": "table",
+                    "enabled": True,
+                }
+            )
+        out_name = self.out_input.text().strip() if hasattr(self, "out_input") else ""
+        if not out_name and prefs_inputs:
+            out_name = f"{prefs_inputs[0]['name']}_{action_suffix('concat_rows')}"
+        return {"inputs": prefs_inputs, "output_name": out_name, "output_data_type": "table"}
+
     def init_custom_ui(self):
         self.df1_combo = QComboBox()
         self.df2_combo = QComboBox()
+        self.df1_combo.currentTextChanged.connect(lambda *_: self._remember_combo_ref(self.df1_combo))
+        self.df2_combo.currentTextChanged.connect(lambda *_: self._remember_combo_ref(self.df2_combo))
         self.combo_boxes_to_update.extend([self.df1_combo, self.df2_combo])
         self.top_form.insertRow(0, "表1 (上方):", self.df1_combo)
         self.top_form.insertRow(1, "表2 (下方):", self.df2_combo)
@@ -199,28 +337,13 @@ class ConcatPanel(BaseToolPanel):
         pass
 
     def get_custom_params(self):
+        io_prefs = self._flow_io_prefs()
         return {
-            "df1_name": self.df1_combo.currentText(),
-            "df2_name": self.df2_combo.currentText(),
             "ignore_index": self.ignore_idx_combo.currentIndex() == 0,
+            "io_prefs": io_prefs,
         }
 
     def set_custom_params(self, p):
-        if "df1_name" in p:
-            self.df1_combo.setCurrentText(p["df1_name"])
-        if "df2_name" in p:
-            self.df2_combo.setCurrentText(p["df2_name"])
+        self._set_binary_inputs_from_params(p)
         if "ignore_index" in p:
             self.ignore_idx_combo.setCurrentIndex(0 if p["ignore_index"] else 1)
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df1_name"] or not p["df2_name"]:
-            return QMessageBox.warning(self, "错误", "请选择两个表")
-        out_name = p["out_name"] or f"{p['df1_name']}_拼接"
-        try:
-            df = concat_rows(self.data_pool[p["df1_name"]],
-                self.data_pool[p["df2_name"]], p["ignore_index"])
-            self.step_recorded.emit("concat_rows", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))

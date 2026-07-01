@@ -6,6 +6,8 @@ from PyQt5.QtGui import QColor, QFont
 class PandasModel(QAbstractTableModel):
     def __init__(self, df=pd.DataFrame(), parent=None, max_preview_rows=None):
         super().__init__(parent)
+        self._source_df_id = id(df)
+        self._max_preview_rows = max_preview_rows
         self._source_rows = len(df)
         if max_preview_rows is not None and len(df) > max_preview_rows:
             df = df.iloc[:max_preview_rows]
@@ -14,6 +16,23 @@ class PandasModel(QAbstractTableModel):
         self.batch_size = 200
         self._loaded_rows = min(len(df), self.batch_size)
         self._col_letters = self._build_col_letters(len(df.columns))
+
+    @staticmethod
+    def cache_key(df, max_preview_rows=None, title=""):
+        attrs = getattr(df, "attrs", {})
+        return (
+            id(df),
+            str(title or ""),
+            tuple(getattr(df, "shape", (0, 0))),
+            max_preview_rows,
+            bool(attrs.get("_hide_column_names")),
+            attrs.get("_source_rows"),
+            attrs.get("_source_cols"),
+            attrs.get("_range_start_row"),
+            attrs.get("_range_start_col"),
+            attrs.get("_range_end_row"),
+            attrs.get("_range_end_col"),
+        )
 
     @staticmethod
     def _build_col_letters(n_cols):

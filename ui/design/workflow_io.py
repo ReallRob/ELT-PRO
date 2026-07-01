@@ -5,17 +5,16 @@ import os
 
 from node_editor import EdgeItem, NodeItem
 from core.manifest_builder import attach_run_manifest
-from core.workflow.action_handlers import collect_action_dependencies
+from core.workflow.schema import migrate_workflow_config, operation_display_name
 from operator_registry import NODE_REGISTRY, get_operator_title
 
 
 def load_workflow_file(path):
     with open(path, "r", encoding="utf-8") as f:
         workflow = json.load(f)
+    workflow = migrate_workflow_config(workflow)
     validate_workflow_config(workflow)
     return workflow
-
-
 
 
 def validate_workflow_config(workflow):
@@ -40,24 +39,19 @@ def validate_workflow_config(workflow):
             raise ValueError(f"第 {index} 个步骤缺少 action")
         if action not in NODE_REGISTRY:
             raise ValueError(f"未知算子 action: {action}")
-        if params is not None and not isinstance(params, dict):
+        if not isinstance(params, dict):
             raise ValueError(f"第 {index} 个步骤 params 必须是对象")
+        if "inputs" in params and not isinstance(params.get("inputs"), list):
+            raise ValueError(f"第 {index} 个步骤 inputs 必须是列表")
+        if "outputs" in params and not isinstance(params.get("outputs"), list):
+            raise ValueError(f"第 {index} 个步骤 outputs 必须是列表")
     return True
 
 
 def save_workflow_file(path, config):
+    config = migrate_workflow_config(config)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, ensure_ascii=False, indent=4)
-
-
-def attach_design_preferences(config, hidden_toolbox, hidden_context_menu, naming_style, custom_names):
-    """Persist design-only preferences beside workflow steps for round-trip editing."""
-    config["hidden_toolbox"] = list(hidden_toolbox)
-    config["hidden_context_menu"] = list(hidden_context_menu)
-    config["naming_style"] = naming_style
-    if custom_names:
-        config["custom_names"] = dict(custom_names)
-    return config
 
 
 def find_missing_load_files(steps):
@@ -77,38 +71,38 @@ def apply_file_mapping(steps, mapping):
         return
     for step in steps or []:
         node_id = step.get("node_id")
-        if node_id in mapping:
-            params = step.setdefault("params", {})
-            if step.get("action") == "import_template":
-                params["template_path"] = mapping[node_id]
-            else:
-                params["file_path"] = mapping[node_id]
-
-
-def restore_design_preferences(widget, workflow):
-    """Restore settings that affect editor chrome rather than execution semantics."""
-    saved_tb = workflow.get("hidden_toolbox", [])
-    saved_ctx = workflow.get("hidden_context_menu", [])
-    if saved_tb:
-        widget.hidden_toolbox = set(saved_tb)
-        widget.toolbox.set_hidden_operators(widget.hidden_toolbox)
-    if saved_ctx:
-        widget.hidden_context_menu = set(saved_ctx)
-
-    widget.naming_style = workflow.get("naming_style", "默认")
-    widget.custom_names = workflow.get("custom_names", {})
-    widget.toolbox.set_naming(widget.naming_style, widget.custom_names)
+        if node_id not in mapping:
+            continue
+        params = step.setdefault("params", {})
+        if step.get("action") == "import_template":
+            params["template_path"] = mapping[node_id]
+        else:
+            params["file_path"] = mapping[node_id]
 
 
 def restore_runtime_metadata(widget, workflow):
     widget.runtime_parameters = workflow.get("runtime_parameters", {})
     widget.parameter_mappings = workflow.get("parameter_mappings", {})
+    widget.global_code = str(workflow.get("global_code") or "")
     widget.crpa_metadata = workflow.get("crpa", {})
     widget.run_manifest = workflow.get("run_manifest", {})
 
 
 def attach_publish_metadata(config, crpa=None, run_manifest=None):
     return attach_run_manifest(config, crpa, run_manifest)
+
+
+def _input_dependencies(params):
+    deps = []
+    seen = set()
+    for item in params.get("inputs", []) or []:
+        if not isinstance(item, dict):
+            continue
+        source_id = item.get("source_node_id")
+        if source_id and source_id not in seen:
+            deps.append(source_id)
+            seen.add(source_id)
+    return deps
 
 
 def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
@@ -118,19 +112,20 @@ def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
 
     created_nodes = {}
     for i, step in enumerate(steps or []):
-        node_id = step.get("node_id")
+        node_id = step.get("design_node_id") or step.get("node_id")
         if not node_id:
             raise ValueError(f"第 {i + 1} 个步骤缺少 node_id")
         action = step.get("action")
         if action not in NODE_REGISTRY:
             raise ValueError(f"未知算子 action: {action}")
-        out_name = step.get("out_name", f"Result_{i}")
-        params = dict(step.get("params", {}))
-        params["out_name"] = out_name
+        params = dict(step.get("params", {}) or {})
         params["action"] = action
 
         color = NODE_REGISTRY.get(action, {}).get("color", "#1976D2")
-        title = f"{out_name}" if action != "load_file" else f"表: {out_name}"
+        title = operation_display_name(
+            {"params": params, "action": action},
+            get_operator_title(action),
+        )
         node = NodeItem(
             node_id,
             action,
@@ -146,10 +141,12 @@ def restore_steps_to_scene(steps, canvas_scene, clear_scene=True):
         created_nodes[node_id] = node
 
     for step in steps or []:
-        node = created_nodes.get(step.get("node_id"))
+        node_id = step.get("design_node_id") or step.get("node_id")
+        node = created_nodes.get(node_id)
         if not node:
             continue
-        for src_id in collect_action_dependencies(node.action_type, step.get("params", {})):
+        dependencies = step.get("design_dependencies") or _input_dependencies(step.get("params", {}) or {})
+        for src_id in dependencies:
             if src_id in created_nodes:
                 edge = EdgeItem(created_nodes[src_id], node)
                 canvas_scene.addItem(edge)

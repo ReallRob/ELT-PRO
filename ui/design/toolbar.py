@@ -76,8 +76,8 @@ def build_design_toolbar(owner):
     toolbar.setContentsMargins(0, 0, 0, 0)
     toolbar.setSpacing(8)
 
-    btn_import = QPushButton("导入模板")
-    btn_export = QPushButton("导出模板")
+    btn_import = QPushButton("导入工作流")
+    btn_export = QPushButton("导出工作流")
     btn_clear = QPushButton("清空画布")
     btn_view = QPushButton("视图")
     btn_settings = QPushButton("设置")

@@ -1,4 +1,4 @@
-"""Multi-input custom pandas code block operator."""
+"""Multi-input custom code block operator."""
 
 from core.dataframe_ops.code_exec import (
     DEFAULT_CODE_TIMEOUT_SECONDS,
@@ -10,32 +10,52 @@ from core.dataframe_ops.code_exec import (
 def code_block(
     tables,
     code,
+    workbooks=None,
+    worksheets=None,
+    global_code="",
+    state=None,
     runtime_parameters=None,
     parameter_mappings=None,
     timeout_seconds=DEFAULT_CODE_TIMEOUT_SECONDS,
+    output_names=None,
 ):
-    """Run custom code over one or more DataFrames.
+    """Run custom code over DataFrame and/or workbook inputs.
 
     Variables available to code:
-    - df: first input table
-    - custom aliases from bindings, for example df1 or summary
-    - dfs: dictionary of alias -> DataFrame
-    - pd, np, re, math, datetime, date, timedelta
-    - params, mappings, param()
+    - df / df1... and custom aliases: copied DataFrame inputs
+    - dfs: dict of alias -> DataFrame
+    - wb / wb1... and custom aliases: workbook inputs
+    - ws / ws1... and custom worksheet aliases: selected worksheet inputs when configured
+    - wbs / wss: dicts of workbook and configured worksheet aliases
+    - pd, np, re, math, datetime, date, timedelta, openpyxl
+    - copy, deepcopy, get_column_letter
+    - params, mappings, param(), state
     """
-    if not tables:
-        raise ValueError("代码块至少需要连接一个输入表")
+    tables = tables or {}
+    workbooks = workbooks or {}
+    worksheets = worksheets or {}
     for alias in tables:
+        if not is_valid_code_alias(alias):
+            raise ValueError(f"变量名无效: {alias}")
+    for alias in workbooks:
+        if not is_valid_code_alias(alias):
+            raise ValueError(f"变量名无效: {alias}")
+    for alias in worksheets:
         if not is_valid_code_alias(alias):
             raise ValueError(f"变量名无效: {alias}")
 
     return run_dataframe_code(
         tables,
         code,
+        workbooks=workbooks,
+        worksheets=worksheets,
+        global_code=global_code,
+        state=state,
         runtime_parameters=runtime_parameters,
         parameter_mappings=parameter_mappings,
         timeout_seconds=timeout_seconds,
         result_name="result",
         fallback_alias="df",
+        output_names=output_names,
         error_prefix="代码块执行",
     )

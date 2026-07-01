@@ -1,16 +1,9 @@
 """Operator panels: calc_panels."""
 
-import os
-import sys
-import pandas as pd
-from pathlib import Path
-from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (
     QComboBox,
-    QFileDialog,
     QFormLayout,
-    QFrame,
     QHBoxLayout,
     QLabel,
     QMenu,
@@ -21,35 +14,16 @@ from PyQt5.QtWidgets import (
 )
 
 from operators.base_panel import BaseToolPanel, ParameterTextEdit, QLineEdit
+from operators.panels.flow_panels import BatchMapFlowPanel
 from core.dataframe_ops.columns import stringify_column_name
-from core.dataframe_ops import (
-    calc_code,
-    calc_col,
-    clean_data,
-    concat_rows,
-    cumsum_data,
-    describe_data,
-    drop_duplicates,
-    export_df,
-    filter_data,
-    get_col_data,
-    group_calc,
-    left_join,
-    melt_table,
-    pct_change_data,
-    pivot_table,
-    rank_col,
-    sample_data,
-    sort_data,
-    transpose_data,
-)
 
 
-class RankPanel(BaseToolPanel):
+class RankPanel(BatchMapFlowPanel):
     theme_color = "#2196F3"
     action_name = "排名"
+    output_suffix = "排名"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("排名规则")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
@@ -142,33 +116,13 @@ class RankPanel(BaseToolPanel):
                     rules.append({"col": c, "method": m, "ascending": asc, "rename": r})
         return {"rules": rules}
 
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["rules"]:
-            return QMessageBox.warning(self, "错误", "参数不完整")
-        out_name = p["out_name"] or f"{p['df_name']}_{self.action_name}"
-        try:
-            df = self.data_pool[p["df_name"]].copy()
-            for rule in p["rules"]:
-                df = rank_col(
-                    df,
-                    [rule["col"]],
-                    [rule["rename"]] if rule["rename"] else [],
-                    col_type=p["col_type"],
-                    method=rule["method"],
-                    ascending=rule["ascending"],
-                )
-            self.step_recorded.emit("rank_col", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
-
-class CalcPanel(BaseToolPanel):
+class CalcPanel(BatchMapFlowPanel):
     use_type = False
     theme_color = "#00BCD4"
     action_name = "计算"
+    output_suffix = "计算"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("规则配置")
         self.custom_layout.addWidget(card)
         self.rules_layout = QVBoxLayout()
@@ -306,7 +260,7 @@ class CalcPanel(BaseToolPanel):
         self._update_rule_summary(header_btn, self._calc_rule_summary(name, formula, mode))
 
     def _show_col_menu(self, target_input, mode="formula"):
-        df_name = self.df_combo.currentText() if self.use_df else ""
+        df_name = self._first_enabled_input_name() if hasattr(self, "_first_enabled_input_name") else ""
         cols = []
         if df_name and df_name in self.data_pool:
             cols = list(self.data_pool[df_name].columns)
@@ -330,9 +284,12 @@ class CalcPanel(BaseToolPanel):
         menu.exec_(QCursor.pos())
 
     def _insert_col_at_cursor(self, line_edit, col_name, mode="formula"):
+        insert = f"df[{col_name!r}]" if mode == "code" else f"[{col_name}]"
+        if hasattr(line_edit, "insert_text"):
+            line_edit.insert_text(insert)
+            return
         text = line_edit.text()
         pos = line_edit.cursorPosition()
-        insert = f"df[{col_name!r}]" if mode == "code" else f"[{col_name}]"
         new_text = text[:pos] + insert + text[pos:]
         line_edit.setText(new_text)
         line_edit.setCursorPosition(pos + len(insert))
@@ -424,35 +381,12 @@ class CalcPanel(BaseToolPanel):
                         rules.append({"new_col_name": n, "formula": f, "mode": "formula"})
         return {"rules": rules}
 
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["rules"]:
-            return QMessageBox.warning(self, "错误", "参数缺失")
-        out_name = p["out_name"] or f"{p['df_name']}_{self.action_name}"
-        try:
-            df = self.data_pool[p["df_name"]].copy()
-            for rule in p["rules"]:
-                if rule.get("mode") == "code":
-                    df = calc_code(
-                        df,
-                        rule.get("code", rule.get("formula", "")),
-                        rule.get("new_col_name", ""),
-                        self._runtime_parameters,
-                        self._parameter_mappings,
-                        rule.get("timeout_seconds", 10),
-                    )
-                else:
-                    df = calc_col(df, rule["new_col_name"], rule["formula"])
-            self.step_recorded.emit("calc_col", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
-
-class CumsumPanel(BaseToolPanel):
+class CumsumPanel(BatchMapFlowPanel):
     theme_color = "#00897B"
     action_name = "累加"
+    output_suffix = "累加"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("累加配置")
         self.custom_layout.addWidget(card)
 
@@ -502,23 +436,12 @@ class CumsumPanel(BaseToolPanel):
             for c in p["col_list"]:
                 self.add_col_row(c)
 
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["col_list"]:
-            return QMessageBox.warning(self, "错误", "请填写累加列")
-        out_name = p["out_name"] or f"{p['df_name']}_累加"
-        try:
-            df = cumsum_data(self.data_pool[p["df_name"]], p["col_list"], p["col_type"])
-            self.step_recorded.emit("cumsum_data", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))
-
-
-class PctChangePanel(BaseToolPanel):
+class PctChangePanel(BatchMapFlowPanel):
     theme_color = "#F4511E"
     action_name = "环比"
+    output_suffix = "环比"
 
-    def init_custom_ui(self):
+    def build_rule_ui(self):
         card, inner = self._make_card("环比配置")
         self.custom_layout.addWidget(card)
 
@@ -580,15 +503,3 @@ class PctChangePanel(BaseToolPanel):
                 self.add_col_row(c)
         if "periods" in p:
             self.periods_input.setText(str(p["periods"]))
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"] or not p["col_list"]:
-            return QMessageBox.warning(self, "错误", "请填写环比列")
-        out_name = p["out_name"] or f"{p['df_name']}_环比"
-        try:
-            df = pct_change_data(self.data_pool[p["df_name"]],
-                p["col_list"], p["periods"], p["col_type"])
-            self.step_recorded.emit("pct_change_data", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))

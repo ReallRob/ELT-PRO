@@ -64,7 +64,7 @@ class ExecuteRunControlsMixin:
         self.lbl_status.setText("执行完毕")
         self.lbl_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
         data_pool = pool.get("data", pool) if isinstance(pool, dict) else {}
-        self.status_detail.setText(f"输出 {len(data_pool)} 张结果表")
+        self.status_detail.setText("已完成")
 
         self.graph_view.set_all_nodes_status("success")
         self.final_pool = data_pool

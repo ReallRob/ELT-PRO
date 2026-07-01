@@ -761,7 +761,7 @@ class CrpaLauncher(QWidget):
         self.progress.setValue(0)
         self.progress.setFormat(f"%v / {total_steps}")
         self.status_label.setText("正在执行")
-        self.engine = WorkflowEngine({}, workflow, keep_intermediates=True)
+        self.engine = WorkflowEngine({}, workflow, keep_intermediates=False)
         self.engine.log_signal.connect(self.log)
         self.engine.progress_signal.connect(self._on_engine_progress)
         self.engine.finished_signal.connect(self._on_engine_finished)

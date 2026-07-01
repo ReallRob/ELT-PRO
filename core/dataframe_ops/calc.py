@@ -83,7 +83,7 @@ def calc_code(
     timeout_seconds=DEFAULT_CODE_TIMEOUT_SECONDS,
 ):
     """Run explicit pandas code with df as the current table, with timeout protection."""
-    return run_dataframe_code(
+    result = run_dataframe_code(
         {"df": df},
         code,
         runtime_parameters=runtime_parameters,
@@ -94,6 +94,9 @@ def calc_code(
         target_col=new_col_name,
         error_prefix="代码计算",
     )
+    if not result.outputs:
+        raise ValueError("代码计算未产生输出")
+    return result.outputs[0].data
 
 
 def cumsum_data(df, col_list, col_type="col_name"):

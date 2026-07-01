@@ -43,6 +43,7 @@ def collect_design_state(widget):
         "hidden_context_menu": list(widget.hidden_context_menu),
         "runtime_parameters": widget.runtime_parameters,
         "parameter_mappings": widget.parameter_mappings,
+        "global_code": getattr(widget, "global_code", ""),
         "crpa": getattr(widget, "crpa_metadata", {}),
         "run_manifest": getattr(widget, "run_manifest", {}),
         "dock_layout_version": DOCK_LAYOUT_VERSION,
@@ -61,6 +62,7 @@ def apply_design_state(widget, state):
     widget.hidden_context_menu = set(state.get("hidden_context_menu", []))
     widget.runtime_parameters = state.get("runtime_parameters", {})
     widget.parameter_mappings = state.get("parameter_mappings", {})
+    widget.global_code = str(state.get("global_code") or "")
     widget.crpa_metadata = state.get("crpa", {})
     widget.run_manifest = state.get("run_manifest", {})
 

@@ -18,7 +18,6 @@ def left_join(
     col_names=None,
     mapping_dict=None,
 ):
-    df1 = df1.copy()
     df2_work = df2.copy() if mapping_dict else df2
     left_keys = normalize_columns(df1, [left_key], key_type)
     right_keys = normalize_columns(df2_work, [right_key], key_type)
@@ -79,9 +78,11 @@ def concat_rows(df1, df2, ignore_index=True):
 
 def transpose_data(df):
     """Transpose rows and columns."""
-    result = df.T.reset_index()
-    result.columns = [
-        f"列{i + 1}" if str(c).startswith("列") else str(c)
-        for i, c in enumerate(result.columns)
-    ]
+    transposed = df.T.reset_index()
+    if transposed.empty:
+        return flatten_dataframe_columns(transposed)
+
+    header = transposed.iloc[0].tolist()
+    result = transposed.iloc[1:].reset_index(drop=True)
+    result.columns = header
     return flatten_dataframe_columns(result)

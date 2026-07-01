@@ -41,7 +41,6 @@ def group_calc(df, group_key, col_dict, col_type="col_name"):
 def pivot_table(df, index_cols, columns_col, values_col, aggfunc="sum",
                 fill_value=0, margins=True, col_type="col_name"):
     """Cross-tab style pivot aggregation."""
-    df = df.copy()
     idx = normalize_columns(df, index_cols, col_type)
     cols = normalize_columns(df, [columns_col], col_type)
     vals = normalize_columns(df, [values_col], col_type)
@@ -63,7 +62,6 @@ def pivot_table(df, index_cols, columns_col, values_col, aggfunc="sum",
 def melt_table(df, id_cols, value_cols, var_name="变量", value_name="值",
                col_type="col_name"):
     """Unpivot wide columns into long rows."""
-    df = df.copy()
     ids = normalize_columns(df, id_cols, col_type)
     vals = normalize_columns(df, value_cols, col_type)
     if not vals:

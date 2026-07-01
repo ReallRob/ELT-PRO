@@ -6,12 +6,14 @@ import os
 from pathlib import Path
 
 from core.manifest_builder import attach_run_manifest
+from core.workflow.schema import migrate_workflow_config
 from core.parameters.mapping_schema import build_rule_engine_config, coerce_parameter_rows
 
 
 def load_workflow_json(path):
     with open(path, "r", encoding="utf-8") as f:
         workflow = json.load(f)
+    workflow = migrate_workflow_config(workflow)
     if "run_manifest" not in workflow:
         attach_run_manifest(workflow, workflow.get("crpa"))
     if "crpa" not in workflow:
@@ -20,6 +22,7 @@ def load_workflow_json(path):
 
 
 def save_workflow_json(path, workflow):
+    workflow = migrate_workflow_config(workflow)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(workflow, f, ensure_ascii=False, indent=4)
 
@@ -163,10 +166,15 @@ def _update_steps_from_manifest(workflow, manifest, file_paths, data_sources):
                 ))
             if template_resource and template_resource.get("key") in file_paths:
                 params["template_path"] = file_paths[template_resource["key"]]
-
+        elif action == "save_template":
             output_resource = resources_by_node_param.get((step.get("node_id"), "output_path"))
             if output_resource and output_resource.get("key") in file_paths:
-                params["output_path"] = file_paths[output_resource["key"]]
+                output_path = file_paths[output_resource["key"]]
+                params["output_path"] = output_path
+                if output_path:
+                    path_obj = Path(output_path)
+                    params["file_name"] = path_obj.name
+                    params["folder_path"] = str(path_obj.parent) if str(path_obj.parent) != "." else ""
         elif action == "export_df":
             export_resource = resources_by_node_param.get((step.get("node_id"), "export_path"))
             if export_resource and export_resource.get("key") in file_paths:

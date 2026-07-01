@@ -8,11 +8,9 @@ from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 from node_editor import NodeItem
 from ui.design.workflow_io import (
     apply_file_mapping,
-    attach_design_preferences,
     attach_publish_metadata,
     find_missing_load_files,
     load_workflow_file,
-    restore_design_preferences,
     restore_runtime_metadata,
     restore_steps_to_scene,
     save_workflow_file,
@@ -76,13 +74,6 @@ class ImportExportUIMixin:
             QMessageBox.warning(self, "错误", "无法导出：可能存在异常连线结构。")
             return
 
-        attach_design_preferences(
-            config,
-            self.hidden_toolbox,
-            self.hidden_context_menu,
-            self.naming_style,
-            self.custom_names,
-        )
         attach_publish_metadata(
             config,
             getattr(self, "crpa_metadata", {}),
@@ -108,7 +99,6 @@ class ImportExportUIMixin:
         try:
             workflow = load_workflow_file(path)
             restore_runtime_metadata(self, workflow)
-            restore_design_preferences(self, workflow)
 
             steps = workflow.get("steps", [])
             if not steps:

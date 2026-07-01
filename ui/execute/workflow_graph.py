@@ -13,6 +13,7 @@ from PyQt5.QtWidgets import (
 )
 
 import utils
+from core.workflow.schema import operation_display_name
 
 
 class ExecuteNodeItem(QGraphicsPathItem):
@@ -85,7 +86,7 @@ class ExecuteNodeItem(QGraphicsPathItem):
         painter.setBrush(QBrush(QColor("#BDBDBD")))
         painter.setPen(QPen(QColor("#757575"), 1))
         port_r = 4
-        if self.action_type != "数据源导入":
+        if self.action_type not in {"数据源导入", "加载模板", "参数输入"}:
             painter.drawEllipse(QPointF(0, self.height / 2), port_r, port_r)
         painter.drawEllipse(QPointF(self.width, self.height / 2), port_r, port_r)
 
@@ -144,8 +145,9 @@ class WorkflowGraphView(QGraphicsView):
             "calc_col": "公式计算",
             "clean_data": "数据清洗",
             "export_df": "自动导出",
-            "import_template": "导入模板",
-            "insert_block": "插入模板",
+            "import_template": "加载模板",
+            "insert_block": "写入模板",
+            "save_template": "保存模板",
             "code_block": "代码块",
         }
 
@@ -154,15 +156,23 @@ class WorkflowGraphView(QGraphicsView):
 
         for step in steps:
             action = step.get("action")
-            out_name = step.get("out_name", f"Result_{step.get('step_id')}")
             node_id = step.get("node_id")
 
             act_zh = action_names.get(action, action)
-            item = ExecuteNodeItem(out_name, out_name, act_zh)
+            display_name = operation_display_name(step, f"Result_{step.get('step_id')}")
+            output_names = [
+                str(output.get("name"))
+                for output in (step.get("params", {}) or {}).get("outputs", []) or []
+                if isinstance(output, dict) and output.get("name")
+            ]
+            preview_key = output_names[0] if output_names else display_name
+            item = ExecuteNodeItem(preview_key, display_name, act_zh)
             self.scene.addItem(item)
             unique_items.append(item)
 
-            self.node_items_dict[out_name] = item
+            self.node_items_dict[display_name] = item
+            for output_name in output_names:
+                self.node_items_dict[output_name] = item
             if node_id:
                 self.node_items_dict[node_id] = item
 
@@ -170,37 +180,15 @@ class WorkflowGraphView(QGraphicsView):
 
         for step in steps:
             curr_id = step.get("node_id")
-            curr_out = step.get("out_name")
-            curr_item = self.node_items_dict.get(curr_id) or self.node_items_dict.get(
-                curr_out
-            )
+            curr_item = self.node_items_dict.get(curr_id)
             if not curr_item:
                 continue
 
             params = step.get("params", {})
             deps = []
-
-            if "df1_id" in params:
-                deps.append(params["df1_id"])
-            if "df2_id" in params:
-                deps.append(params["df2_id"])
-            if "df_id" in params:
-                deps.append(params["df_id"])
-            if "template_id" in params:
-                deps.append(params["template_id"])
-            for insert_id in params.get("insert_block_ids", []) or []:
-                deps.append(insert_id)
-            for binding in params.get("input_bindings", []) or []:
-                if isinstance(binding, dict) and binding.get("df_id"):
-                    deps.append(binding["df_id"])
-
-            if not deps:
-                if "df1_name" in params:
-                    deps.append(params["df1_name"])
-                if "df2_name" in params:
-                    deps.append(params["df2_name"])
-                if "df_name" in params:
-                    deps.append(params["df_name"])
+            for input_item in params.get("inputs", []) or []:
+                if isinstance(input_item, dict) and input_item.get("source_node_id"):
+                    deps.append(input_item["source_node_id"])
 
             for dep in deps:
                 dep_item = self.node_items_dict.get(dep)

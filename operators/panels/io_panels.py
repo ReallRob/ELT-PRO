@@ -1,20 +1,18 @@
 """Operator panels for importing and exporting tabular data."""
 
 import os
-from pathlib import Path
+
+from core.workflow.schema import default_load_output_name
 
 from PyQt5.QtWidgets import (
     QComboBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
-    QLabel,
-    QMessageBox,
     QPushButton,
 )
 
-from core.app_paths import get_exec_dir
-from core.dataframe_ops import CSV_SHEET_LABEL, export_df, read_source_file
+from core.dataframe_ops import CSV_SHEET_LABEL
 from operators.base_panel import BaseToolPanel, QLineEdit
 
 
@@ -85,18 +83,19 @@ class LoadFilePanel(BaseToolPanel):
             self.update_sheets(path)
 
     def update_sheets(self, path):
-        self.sheet_combo.clear()
+        current = self.sheet_combo.currentText()
+        sheets = []
         if path.endswith((".xlsx", ".xls")):
             try:
                 import pandas as pd
 
                 with pd.ExcelFile(path) as excel:
                     sheets = list(excel.sheet_names)
-                self.sheet_combo.addItems(sheets)
             except Exception:
                 pass
         else:
-            self.sheet_combo.addItem(CSV_SHEET_LABEL)
+            sheets = [CSV_SHEET_LABEL] if path else []
+        self._set_combo_items_preserving_text(self.sheet_combo, sheets, current)
 
     def auto_update_out_name(self, text):
         if not text:
@@ -108,8 +107,12 @@ class LoadFilePanel(BaseToolPanel):
         else:
             self.out_input.setText(text)
 
+    def _load_output_name(self, params):
+        explicit = self.out_input.text().strip() if hasattr(self, "out_input") else ""
+        return explicit or default_load_output_name(params, "数据源")
+
     def get_custom_params(self):
-        return {
+        params = {
             "file_path": self.path_input.text().strip(),
             "sheet_name": (
                 self.sheet_combo.currentText() if self.sheet_combo.count() > 0 else 0
@@ -120,13 +123,24 @@ class LoadFilePanel(BaseToolPanel):
             "ncols": self._number_or_token(self.ncols_input.text(), None),
             "has_header": self.header_combo.currentText() == "是",
         }
+        output_name = self._load_output_name(params)
+        if params["file_path"]:
+            params["io_prefs"] = {
+                "output_name": output_name,
+                "output_data_type": "table",
+            }
+        return params
 
     def set_custom_params(self, p):
         if "file_path" in p:
             self.path_input.setText(p["file_path"])
             self.update_sheets(p["file_path"])
         if "sheet_name" in p:
-            self.sheet_combo.setCurrentText(str(p["sheet_name"]))
+            self._set_combo_items_preserving_text(
+                self.sheet_combo,
+                [self.sheet_combo.itemText(i) for i in range(self.sheet_combo.count())],
+                str(p["sheet_name"]),
+            )
         if "skiprows" in p:
             self.skip_input.setText(str(p["skiprows"]))
         if "start_col" in p:
@@ -147,31 +161,14 @@ class LoadFilePanel(BaseToolPanel):
         self.header_combo.setCurrentText("是")
         self.nrows_input.clear()
 
-    def execute(self):
-        p = self.get_params()
-        if not p["file_path"] or not os.path.exists(p["file_path"]):
-            return QMessageBox.warning(self, "错误", "请选择有效的文件路径！")
-
-        out_name = p["out_name"] or os.path.basename(p["file_path"]).split(".")[0]
-        try:
-            df = read_source_file(
-                p["file_path"],
-                sheet_name=p.get("sheet_name", 0),
-                skiprows=p.get("skiprows", 0),
-                nrows=p.get("nrows"),
-                start_col=p.get("start_col", 1),
-                ncols=p.get("ncols"),
-                has_header=p.get("has_header", True),
-            )
-            self.step_recorded.emit("load_file", p, df, out_name)
-        except Exception as e:
-            QMessageBox.critical(self, "加载失败", str(e))
-
-
 class ExportNodePanel(BaseToolPanel):
     use_type = False
     use_out = False
     theme_color = "#607D8B"
+    action_name = "导出"
+
+    def _default_output_name(self, input_name):
+        return "导出记录"
 
     def init_custom_ui(self):
         card, inner = self._make_card("导出配置")
@@ -216,35 +213,4 @@ class ExportNodePanel(BaseToolPanel):
         return {
             "file_name": self.fname_input.text().strip(),
             "folder_path": self.dir_input.text().strip(),
-            "out_name": "Export_Point",
         }
-
-    def execute(self):
-        p = self.get_params()
-        if not p["df_name"]:
-            return QMessageBox.warning(self, "错误", "未选择导出表")
-
-        default_dir = get_exec_dir()
-        fname = p.get("file_name") or "Result.xlsx"
-        fdir = p.get("folder_path", "").strip()
-
-        if not fdir:
-            target_path = str(default_dir / fname)
-        else:
-            target_path = str(Path(fdir) / fname)
-
-        try:
-            success, final_path = export_df(
-                self.data_pool[p["df_name"]], target_path, default_dir
-            )
-            if success:
-                QMessageBox.information(self, "成功", f"文件已保存至：\n{final_path}")
-            else:
-                QMessageBox.warning(
-                    self, "路径重定向", f"由于权限或路径问题，已转存至：\n{final_path}"
-                )
-            self.step_recorded.emit(
-                "export_df", p, self.data_pool[p["df_name"]], "导出记录"
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "失败", str(e))

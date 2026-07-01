@@ -16,12 +16,7 @@ from node_editor import EdgeItem, NodeItem
 from operator_registry import NODE_REGISTRY, get_operator_title
 
 RUNTIME_DEPENDENCY_KEYS = {
-    "df_id",
-    "df1_id",
-    "df2_id",
-    "template_id",
-    "insert_block_ids",
-    "input_bindings",
+    "inputs",
 }
 
 
@@ -153,8 +148,9 @@ class CanvasActionsMixin:
         for key in RUNTIME_DEPENDENCY_KEYS:
             params.pop(key, None)
         params["action"] = node.action_type
-        if "out_name" in params:
-            params["out_name"] = _copied_title(params.get("out_name"))
+        for output in params.get("outputs", []) or []:
+            if isinstance(output, dict) and output.get("name"):
+                output["name"] = _copied_title(output.get("name"))
         return params
 
     def copy_selected_nodes(self):
@@ -181,8 +177,11 @@ class CanvasActionsMixin:
                 ),
             )
             copied.params = self._copyable_params(node)
-            if "out_name" in copied.params:
-                copied.title = str(copied.params["out_name"])
+            outputs = [item for item in copied.params.get("outputs", []) or [] if isinstance(item, dict)]
+            if len(outputs) == 1:
+                copied.title = str(outputs[0].get("name") or copied.title)
+            elif len(outputs) > 1:
+                copied.title = f"{len(outputs)} 个输出"
             copied.is_dirty = True
             self.canvas_scene.addItem(copied)
             copied_nodes.append(copied)

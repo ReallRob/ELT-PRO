@@ -156,8 +156,16 @@ def build_config_dialog(owner):
     for action, config in NODE_REGISTRY.items():
         panel = config["panel_class"](owner.ctx.data_pool)
         panel.set_runtime_parameters(owner.runtime_parameters, owner.parameter_mappings)
+        if hasattr(panel, "set_global_code"):
+            panel.set_global_code(getattr(owner, "global_code", ""))
+        if hasattr(panel, "global_code_changed"):
+            panel.global_code_changed.connect(owner.on_global_code_changed)
+        if hasattr(panel, "code_editor_saved"):
+            panel.code_editor_saved.connect(owner.on_code_editor_saved)
+        if hasattr(panel, "code_editor_run_requested"):
+            panel.code_editor_run_requested.connect(owner.on_code_editor_run_requested)
         panel.save_requested.connect(owner.on_tool_saved)
-        panel.step_recorded.connect(owner.on_tool_executed)
+        panel.run_requested.connect(owner.on_tool_run_requested)
         owner.config_area.addWidget(panel)
         owner.panel_instances[action] = panel
 

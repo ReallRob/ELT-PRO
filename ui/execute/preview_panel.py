@@ -1,10 +1,14 @@
 """Result preview and export actions for execute mode."""
 
+import os
+import shutil
+
 from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 from table_model import PandasModel
 
 PREVIEW_ROW_LIMIT = 5000
+PREVIEW_MODEL_CACHE_LIMIT = 8
 
 
 def _is_template_preview(value):
@@ -16,6 +20,30 @@ def _is_template_preview(value):
 
 
 class ExecutePreviewMixin:
+    def _preview_model_cache(self):
+        cache = getattr(self, "_preview_model_cache_store", None)
+        if cache is None:
+            cache = {}
+            self._preview_model_cache_store = cache
+        return cache
+
+    def _clear_preview_model_cache(self):
+        cache = getattr(self, "_preview_model_cache_store", None)
+        if cache is not None:
+            cache.clear()
+
+    def _model_for_preview(self, title, df):
+        cache = self._preview_model_cache()
+        key = PandasModel.cache_key(df, PREVIEW_ROW_LIMIT, title)
+        model = cache.get(key)
+        if model is not None:
+            return model
+        if len(cache) >= PREVIEW_MODEL_CACHE_LIMIT:
+            cache.pop(next(iter(cache)))
+        model = PandasModel(df, max_preview_rows=PREVIEW_ROW_LIMIT)
+        cache[key] = model
+        return model
+
     def on_node_clicked(self, table_name, is_action):
         if not table_name:
             return
@@ -32,6 +60,7 @@ class ExecutePreviewMixin:
                         f"当前预览: 【{table_name}】 (模板无可预览工作表)"
                     )
                     self.result_table.setModel(None)
+                    self._clear_preview_model_cache()
                     self.btn_export_preview.hide()
                     return
                 self.preview_title.setText(
@@ -47,7 +76,7 @@ class ExecutePreviewMixin:
             self.preview_title.setStyleSheet(
                 "padding: 5px; color: #2196F3; font-weight: bold;"
             )
-            model = PandasModel(df, max_preview_rows=PREVIEW_ROW_LIMIT)
+            model = self._model_for_preview(table_name, df)
             self.result_table.setModel(model)
             self.btn_export_preview.show()
         else:
@@ -58,6 +87,7 @@ class ExecutePreviewMixin:
                 "padding: 5px; color: #E91E63; font-weight: bold;"
             )
             self.result_table.setModel(None)
+            self._clear_preview_model_cache()
             self.btn_export_preview.hide()
 
     def export_current_table(self):
@@ -83,9 +113,20 @@ class ExecutePreviewMixin:
                         _, first_df = next(iter(value.get("sheets", {}).items()))
                         first_df.to_csv(path, index=False, header=False, encoding="utf-8-sig")
                     else:
-                        with __import__("pandas").ExcelWriter(path) as writer:
-                            for sheet_name, df in value.get("sheets", {}).items():
-                                df.to_excel(writer, sheet_name=sheet_name[:31], index=False, header=False)
+                        saved_path = str(value.get("saved_path") or "")
+                        same_path = (
+                            saved_path
+                            and os.path.exists(saved_path)
+                            and os.path.abspath(saved_path) == os.path.abspath(path)
+                        )
+                        if same_path:
+                            pass
+                        elif saved_path and os.path.exists(saved_path):
+                            shutil.copyfile(saved_path, path)
+                        else:
+                            with __import__("pandas").ExcelWriter(path) as writer:
+                                for sheet_name, df in value.get("sheets", {}).items():
+                                    df.to_excel(writer, sheet_name=sheet_name[:31], index=False, header=False)
                 elif path.endswith(".csv"):
                     value.to_csv(path, index=False, encoding="utf-8-sig")
                 else:

@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from core.workflow.schema import step_display_name
+
 
 EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 CSV_EXTENSIONS = {".csv"}
@@ -95,6 +97,13 @@ def _export_target_path(params):
     return file_name
 
 
+def _template_output_target_path(params):
+    output_path = str(params.get("output_path") or "").strip()
+    if output_path:
+        return output_path
+    return _export_target_path(params)
+
+
 def _iter_parameter_rows(step):
     params = step.get("params", {}) or {}
     rows = params.get("advanced_parameters")
@@ -153,8 +162,8 @@ def build_run_manifest(workflow_config, existing_manifest=None):
                 )
             data_sources.append(
                 {
-                    "key": step.get("node_id") or step.get("out_name") or f"data_{len(data_sources) + 1}",
-                    "label": step.get("out_name") or "数据源",
+                    "key": step.get("node_id") or f"data_{len(data_sources) + 1}",
+                    "label": step_display_name(step, "数据源"),
                     "node_id": step.get("node_id", ""),
                     "file_key": path_to_key[resource_id],
                     "sheet": params.get("sheet_name", ""),
@@ -179,20 +188,21 @@ def build_run_manifest(workflow_config, existing_manifest=None):
                         param_key="template_path",
                     )
                 )
-            output_path = params.get("output_path", "") or ""
+        elif action == "save_template":
+            output_path = _template_output_target_path(params)
             key = _safe_key("output", output_counter)
             output_counter += 1
             file_resources.append(
                 _build_file_resource(
                     output_path,
                     key,
-                    f"{step.get('out_name') or '模板'}输出文件",
+                    step_display_name(step, params.get("file_name") or f"模板输出{output_counter - 1}"),
                     "output",
                     required=False,
                     file_type="excel",
                     filters=["*.xlsx"],
                     node_id=step.get("node_id", ""),
-                    action="import_template",
+                    action="save_template",
                     param_key="output_path",
                 )
             )
@@ -204,7 +214,7 @@ def build_run_manifest(workflow_config, existing_manifest=None):
                 _build_file_resource(
                     output_path,
                     key,
-                    step.get("out_name") or params.get("file_name") or f"导出文件{output_counter - 1}",
+                    step_display_name(step, params.get("file_name") or f"导出文件{output_counter - 1}"),
                     "output",
                     required=False,
                     filters=_export_filters(output_path),
