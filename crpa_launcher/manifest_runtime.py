@@ -30,7 +30,9 @@ def save_workflow_json(path, workflow):
 def file_dialog_filter(resource):
     filters = resource.get("filters") or ["*.*"]
     joined = " ".join(filters)
-    if resource.get("role") == "template":
+    if resource.get("type") == "file" and resource.get("role") is None:
+        label = str(resource.get("label") or "可选文件")
+    elif resource.get("role") == "template":
         label = "模板文件"
     elif resource.get("role") == "output":
         label = "输出文件"
@@ -95,6 +97,7 @@ def _update_parameter_steps(workflow, parameter_values):
                         "fieldName": item.get("fieldName", ""),
                         "dataType": item.get("dataType", "String"),
                         "input": item.get("input", ""),
+                        "filters": item.get("filters"),
                         "rules": [],
                     }
                 )
@@ -192,6 +195,8 @@ def build_runtime_workflow(base_workflow, file_paths, data_sources, parameters):
     manifest = workflow.get("run_manifest") or {}
     _update_steps_from_manifest(workflow, manifest, file_paths, data_sources)
     _update_parameter_steps(workflow, parameters)
+    attach_run_manifest(workflow, workflow.get("crpa"), workflow.get("run_manifest"))
+    manifest = workflow.get("run_manifest") or {}
     workflow["runtime_parameters"] = {
         key: _coerce_param_value(value, item.get("type", "text"))
         for item in manifest.get("parameters", []) or []

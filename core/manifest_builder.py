@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from core.parameters.mapping_schema import normalize_file_filters
+
 from core.workflow.schema import step_display_name
 
 
@@ -22,6 +24,8 @@ _PARAM_TYPE_MAP = {
     "datetime": "date",
     "bool": "bool",
     "boolean": "bool",
+    "file": "file",
+    "folder": "folder",
 }
 
 
@@ -118,6 +122,7 @@ def _iter_parameter_rows(step):
             "fieldName": item.get("fieldName", ""),
             "dataType": item.get("dataType", "String"),
             "input": item.get("input", item.get("value", "")),
+            "filters": item.get("filters"),
         }
 
     typed = params.get("typed_parameters") or {}
@@ -230,15 +235,16 @@ def build_run_manifest(workflow_config, existing_manifest=None):
                 if not name or name in param_seen:
                     continue
                 param_seen.add(name)
-                parameters.append(
-                    {
-                        "key": name,
-                        "label": name,
-                        "type": _parameter_type(row.get("dataType")),
-                        "default": row.get("input", ""),
-                        "required": True,
-                    }
-                )
+                item = {
+                    "key": name,
+                    "label": name,
+                    "type": _parameter_type(row.get("dataType")),
+                    "default": row.get("input", ""),
+                    "required": True,
+                }
+                if item["type"] == "file":
+                    item["filters"] = normalize_file_filters(row.get("filters"))
+                parameters.append(item)
 
     return {
         "file_resources": file_resources,

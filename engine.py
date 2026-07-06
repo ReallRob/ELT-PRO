@@ -28,7 +28,7 @@ class WorkflowEngine(QThread):
         super().__init__()
         self.file_mapping = file_mapping or {}
         self.workflow_config = workflow_config or {}
-        self.runtime_store = WorkflowRuntimeStore()
+        self.runtime_store = WorkflowRuntimeStore(log_callback=self.log)
         self.keep_intermediates = keep_intermediates
         if profile_mode is None:
             profile_mode = bool(
@@ -44,6 +44,7 @@ class WorkflowEngine(QThread):
         self.parameter_mappings = {}
         self.runtime_state = {}
         self.global_code = ""
+        self.function_spaces = []
 
     def log(self, msg):
         self.log_signal.emit(msg)
@@ -186,6 +187,7 @@ class WorkflowEngine(QThread):
         params["parameter_mappings"] = parameter_mappings
         params["state"] = self.runtime_state
         params["global_code"] = self.global_code
+        params["function_spaces"] = self.function_spaces
         return params
 
     def _to_display_value(self, value):
@@ -291,6 +293,7 @@ class WorkflowEngine(QThread):
             self.parameter_mappings = parameter_mappings
             self.runtime_state = dict(self.workflow_config.get("state") or {})
             self.global_code = str(self.workflow_config.get("global_code") or "")
+            self.function_spaces = list(self.workflow_config.get("function_spaces") or [])
 
             self.runtime_store.reset()
             display_pool = {}

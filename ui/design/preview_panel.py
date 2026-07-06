@@ -7,14 +7,13 @@ from PyQt5.QtWidgets import QTableView
 
 from table_model import PandasModel
 from template_engine import (
-    close_workbook,
-    load_template,
     workbook_sheet_preview_data,
     workbook_to_preview_data,
 )
 
 PREVIEW_ROW_LIMIT = 5000
 PREVIEW_MODEL_CACHE_LIMIT = 16
+EMPTY_PREVIEW_LABEL = "暂无数据"
 
 
 def _is_template_preview(value):
@@ -69,7 +68,7 @@ class PreviewPanelMixin:
             if current_text in tables:
                 self.combo_preview_tables.setCurrentText(current_text)
         else:
-            self.combo_preview_tables.addItem("暂无数据")
+            self.combo_preview_tables.addItem(EMPTY_PREVIEW_LABEL)
 
         self.combo_preview_tables.blockSignals(False)
         self._is_updating_combo = False
@@ -86,7 +85,7 @@ class PreviewPanelMixin:
                 self._render_node_preview(node)
         else:
             self.chk_auto_follow.setStyleSheet("font-weight: normal; color: #999;")
-            if self.combo_preview_tables.currentText() != "暂无数据":
+            if self.combo_preview_tables.currentText() != EMPTY_PREVIEW_LABEL:
                 self.preview_title.setText(
                     f"已锁定表: 【{self.combo_preview_tables.currentText()}】"
                 )
@@ -97,7 +96,7 @@ class PreviewPanelMixin:
             return
 
         table_name = self.combo_preview_tables.currentText()
-        if table_name and table_name != "暂无数据":
+        if table_name and table_name != EMPTY_PREVIEW_LABEL:
             self.chk_auto_follow.blockSignals(True)
             self.chk_auto_follow.setChecked(False)
             self.chk_auto_follow.setStyleSheet("font-weight: normal; color: #999;")
@@ -110,12 +109,12 @@ class PreviewPanelMixin:
 
         if table_name in self.ctx.data_pool:
             value = self.ctx.get_data(table_name)
-            self.preview_title.setText(f"已锁定表: 【{table_name}】(点击画布不切换)")
+            self.preview_title.setText(f"已锁定表: 【{table_name}】")
             self.preview_title.setStyleSheet("color: #E65100; font-weight: bold;")
             self._add_preview_value(f"锁定视图: {table_name}", value)
         else:
-            self.preview_title.setText(f"锁定表 【{table_name}】(暂无数据)")
-            self.lbl_shape.setText("(0 行 0 列)")
+            self.preview_title.setText(f"锁定表【{table_name}】暂无数据")
+            self.lbl_shape.setText("(0 行, 0 列)")
 
     def _node_preview_outputs(self, node):
         output_keys = getattr(self.ctx, "output_key_map", {}).get(node.node_id, {})
@@ -147,7 +146,7 @@ class PreviewPanelMixin:
                 "数据预览: 未选择节点\n(提示: 双击画布节点可配置参数)"
             )
             self.preview_title.setStyleSheet("color: black; font-weight: bold;")
-            self.lbl_shape.setText("(0 行 0 列)")
+            self.lbl_shape.setText("(0 行, 0 列)")
             return
 
         outputs = self._node_preview_outputs(node)
@@ -158,7 +157,7 @@ class PreviewPanelMixin:
                 self.combo_preview_tables.setCurrentText(first_key)
             self._is_updating_combo = False
 
-            suffix = f" · {len(outputs)} 个输出" if len(outputs) > 1 else ""
+            suffix = f" | {len(outputs)} 个输出" if len(outputs) > 1 else ""
             self.preview_title.setText(f"跟随节点: 【{node.title}】{suffix}")
             self.preview_title.setStyleSheet("color: #2196F3; font-weight: bold;")
             for _output_id, key, value in outputs:
@@ -168,7 +167,7 @@ class PreviewPanelMixin:
         if node.action_type == "import_template" and self._render_import_template_preview(node):
             return
 
-        self.preview_title.setText("源模式: 【正在查看上游原材料】")
+        self.preview_title.setText("源模式: 正在查看上游原始数据")
         self.preview_title.setStyleSheet("color: #673AB7; font-weight: bold;")
 
         valid_sources = 0
@@ -176,20 +175,22 @@ class PreviewPanelMixin:
             up_node = edge.source_node
             if hasattr(self, "_is_deleted_qt_object") and self._is_deleted_qt_object(up_node):
                 continue
-            for _output_id, up_name in getattr(self.ctx, "output_key_map", {}).get(up_node.node_id, {}).items():
+            output_map = getattr(self.ctx, "output_key_map", {}).get(up_node.node_id, {})
+            for _output_id, up_name in output_map.items():
                 if up_name and up_name in self.ctx.data_pool:
                     value = self.ctx.get_data(up_name)
-                    prefix = (
-                        "左表(主)"
-                        if node.action_type == "left_join" and i == 0
-                        else "右表(附)" if node.action_type == "left_join" else "来源表"
-                    )
+                    if node.action_type == "left_join" and i == 0:
+                        prefix = "左表"
+                    elif node.action_type == "left_join":
+                        prefix = "右表"
+                    else:
+                        prefix = "来源表"
                     self._add_preview_value(f"{prefix}: {up_name}", value)
                     valid_sources += 1
 
         if valid_sources == 0:
-            self.preview_title.setText("源模式失败: 【连入的上游尚未产生数据】")
-            self.lbl_shape.setText("(0 行 0 列)")
+            self.preview_title.setText("源模式失败: 连接的上游尚未产生数据")
+            self.lbl_shape.setText("(0 行, 0 列)")
 
     def _template_preview_payload(self, wb, params):
         sheet_name = str((params or {}).get("preview_sheet_name") or "").strip()
@@ -215,24 +216,14 @@ class PreviewPanelMixin:
 
     def _render_import_template_preview(self, node):
         template_path = str(node.params.get("template_path") or "").strip()
-        if not template_path or not os.path.exists(template_path):
-            return False
-
-        wb = None
-        try:
-            wb, _ = load_template(template_path)
-            value = self._template_preview_payload(wb, node.params)
-            self.preview_title.setText("加载模板预览: 文件原始内容")
-            self.preview_title.setStyleSheet("color: #2196F3; font-weight: bold;")
-            self._add_preview_value("加载模板预览", value)
-            return True
-        except Exception as exc:
-            self.preview_title.setText(f"模板预览失败: {exc}")
-            self.preview_title.setStyleSheet("color: #B91C1C; font-weight: bold;")
-            self.lbl_shape.setText("(0 行 0 列)")
-            return True
-        finally:
-            close_workbook(wb)
+        if not template_path:
+            self.preview_title.setText("加载模板预览：请先选择模板文件")
+        else:
+            file_name = os.path.basename(template_path) or template_path
+            self.preview_title.setText(f"加载模板预览：{file_name} 尚未运行")
+        self.preview_title.setStyleSheet("color: #64748B; font-weight: bold;")
+        self.lbl_shape.setText("运行加载模板节点后，将使用内存中的工作簿生成预览")
+        return True
 
     def _add_preview_value(self, title, value):
         if _is_workbook_entry(value):
@@ -244,7 +235,7 @@ class PreviewPanelMixin:
             for sheet_name, df in value.get("sheets", {}).items():
                 self._add_preview_tab(sheet_name, df)
             if not value.get("sheets"):
-                self.lbl_shape.setText("(0 行 0 列)")
+                self.lbl_shape.setText("(0 行, 0 列)")
             return
         self._add_preview_tab(title, value)
 
@@ -252,7 +243,7 @@ class PreviewPanelMixin:
         suffix = ""
         if rows > PREVIEW_ROW_LIMIT:
             suffix = f"，仅预览前 {PREVIEW_ROW_LIMIT} 行"
-        return f"({rows} 行 {cols} 列{suffix})"
+        return f"({rows} 行, {cols} 列{suffix})"
 
     def _add_preview_tab(self, title, df):
         table = QTableView()
@@ -318,4 +309,4 @@ class PreviewPanelMixin:
             rows, cols = self._current_tab_shapes[index]
             self.lbl_shape.setText(self._preview_shape_text(rows, cols))
         else:
-            self.lbl_shape.setText("(0 行 0 列)")
+            self.lbl_shape.setText("(0 行, 0 列)")

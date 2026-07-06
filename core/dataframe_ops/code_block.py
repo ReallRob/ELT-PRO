@@ -13,11 +13,13 @@ def code_block(
     workbooks=None,
     worksheets=None,
     global_code="",
+    function_spaces=None,
     state=None,
     runtime_parameters=None,
     parameter_mappings=None,
     timeout_seconds=DEFAULT_CODE_TIMEOUT_SECONDS,
     output_names=None,
+    log_callback=None,
 ):
     """Run custom code over DataFrame and/or workbook inputs.
 
@@ -27,6 +29,7 @@ def code_block(
     - wb / wb1... and custom aliases: workbook inputs
     - ws / ws1... and custom worksheet aliases: selected worksheet inputs when configured
     - wbs / wss: dicts of workbook and configured worksheet aliases
+    - function namespaces such as date_utils / excel_utils when configured
     - pd, np, re, math, datetime, date, timedelta, openpyxl
     - copy, deepcopy, get_column_letter
     - params, mappings, param(), state
@@ -50,6 +53,7 @@ def code_block(
         workbooks=workbooks,
         worksheets=worksheets,
         global_code=global_code,
+        function_spaces=function_spaces,
         state=state,
         runtime_parameters=runtime_parameters,
         parameter_mappings=parameter_mappings,
@@ -58,4 +62,5 @@ def code_block(
         fallback_alias="df",
         output_names=output_names,
         error_prefix="代码块执行",
+        log_callback=log_callback,
     )

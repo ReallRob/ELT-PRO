@@ -89,7 +89,8 @@
 │   ├── manifest_runtime.py         # 从 run_manifest 读取资源、工作表、参数并执行工作流
 │   └── settings.py                 # 运行器本地状态与配置
 ├── config/
-│   └── workspace_config.json       # UI 状态、最近工作流、执行模式状态，本地配置不应提交
+│   ├── workspace_config.json       # 主程序 UI 状态、最近工作流、执行模式状态，本地配置不应提交
+│   └── crpa_launcher_config.json   # CRPA JSON 运行器本地状态，本地配置不应提交
 ├── README.md                       # 项目简介、运行方式和业务功能说明
 └── PROJECT_STRUCTURE.md            # 当前项目结构说明
 ```

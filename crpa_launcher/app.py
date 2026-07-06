@@ -1,5 +1,6 @@
 """PyQt launcher that builds a runtime form from workflow JSON."""
 
+import fnmatch
 import json
 import os
 from pathlib import Path
@@ -44,6 +45,8 @@ class CrpaLauncher(QWidget):
         super().__init__()
         self.workflow_path = ""
         self.workflow = None
+        self.crpa_code = ""
+        self.name = ""
         self.file_inputs = {}
         self.sheet_combos = {}
         self.param_inputs = {}
@@ -359,6 +362,11 @@ class CrpaLauncher(QWidget):
 
         layout.addStretch(1)
 
+        self.btn_save_config = QPushButton("保存当前配置")
+        self.btn_save_config.setEnabled(False)
+        self.btn_save_config.clicked.connect(self.save_current_config)
+        layout.addWidget(self.btn_save_config)
+
         self.btn_run = QPushButton("运行工作流")
         self.btn_run.setObjectName("primaryRunButton")
         self.btn_run.setEnabled(False)
@@ -419,11 +427,12 @@ class CrpaLauncher(QWidget):
         set_last_workflow_path(path)
         self.json_path_input.setText(path)
         crpa = workflow.get("crpa") or {}
-        workflow_name = crpa.get("name") or workflow.get("workflow_name", "未命名")
-        crpa_code = crpa.get("code", "") or "未填写"
-        self.workflow_name_label.setText(workflow_name)
-        self.crpa_label.setText(f"CRPA: {crpa_code}")
+        self.crpa_code = str(crpa.get("code") or "")
+        self.name = str(crpa.get("name") or workflow.get("workflow_name") or "")
+        self.workflow_name_label.setText(self.name or "未命名")
+        self.crpa_label.setText(f"CRPA: {self.crpa_code or '未填写'}")
         self._build_dynamic_form()
+        self.btn_save_config.setEnabled(True)
         self.btn_run.setEnabled(True)
         self.status_label.setText(f"已加载: {os.path.basename(path)}")
         self.progress.setRange(0, 100)
@@ -640,12 +649,28 @@ class CrpaLauncher(QWidget):
             self.sheet_status_label.style().polish(self.sheet_status_label)
 
     def _make_param_widget(self, param):
-        param_type = param.get("type", "text")
+        param_type = str(param.get("type", "text")).lower()
         default = param.get("default", "")
         if param_type == "bool":
             widget = QCheckBox()
             widget.setChecked(str(default).lower() in {"1", "true", "yes", "是"})
             return widget
+        if param_type in {"file", "folder"}:
+            row = QWidget()
+            layout = QHBoxLayout(row)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(8)
+            line = QLineEdit(str(default))
+            line.setProperty("path_value", True)
+            line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            line.setPlaceholderText("选择或输入文件路径" if param_type == "file" else "选择或输入文件夹路径")
+            btn = QPushButton("浏览")
+            btn.setFixedWidth(82)
+            btn.clicked.connect(lambda _=False, p=param, l=line: self._browse_parameter_path(p, l))
+            row.setProperty("param_type", param_type)
+            layout.addWidget(line, stretch=1)
+            layout.addWidget(btn)
+            return row
         widget = QLineEdit(str(default))
         widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         if param_type == "number":
@@ -653,6 +678,33 @@ class CrpaLauncher(QWidget):
         elif param_type == "date":
             widget.setPlaceholderText("YYYY-MM-DD")
         return widget
+
+    @staticmethod
+    def _path_start_dir(text):
+        path = Path(str(text or "").strip())
+        if path.is_dir():
+            return str(path)
+        if str(path) and path.parent and str(path.parent) != ".":
+            return str(path.parent)
+        return ""
+
+    def _browse_parameter_path(self, param, line):
+        current = line.text().strip()
+        if str(param.get("type", "")).lower() == "folder":
+            path = QFileDialog.getExistingDirectory(
+                self,
+                f"选择{param.get('label') or '文件夹'}",
+                current or self._path_start_dir(current),
+            )
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                f"选择{param.get('label') or '文件'}",
+                self._path_start_dir(current),
+                file_dialog_filter(param),
+            )
+        if path:
+            line.setText(path)
 
     def _browse_resource(self, resource, line):
         start_dir = str(Path(line.text()).parent) if line.text() else ""
@@ -709,10 +761,25 @@ class CrpaLauncher(QWidget):
             if isinstance(widget, QCheckBox):
                 params[key] = widget.isChecked()
             else:
-                params[key] = widget.text().strip()
+                line = widget.findChild(QLineEdit) if isinstance(widget, QWidget) else None
+                if line and line.property("path_value"):
+                    params[key] = line.text().strip()
+                else:
+                    params[key] = widget.text().strip()
         return params
 
-    def _validate_inputs(self, file_paths):
+    @staticmethod
+    def _matches_file_filters(path, filters):
+        filters = filters or ["*.*"]
+        for pattern in filters:
+            pattern = str(pattern or "").strip().lower()
+            if pattern in {"", "*", "*.*"}:
+                return True
+            if fnmatch.fnmatch(Path(path).name.lower(), pattern):
+                return True
+        return False
+
+    def _validate_inputs(self, file_paths, parameters=None):
         manifest = self.workflow.get("run_manifest") or {}
         for resource in manifest.get("file_resources", []) or []:
             if resource.get("required") and not file_paths.get(resource.get("key")):
@@ -725,25 +792,66 @@ class CrpaLauncher(QWidget):
                 continue
             if path and not os.path.exists(path):
                 raise ValueError(f"文件不存在: {path}")
+        parameters = parameters or {}
+        for param in manifest.get("parameters", []) or []:
+            param_type = str(param.get("type", "")).lower()
+            if param_type not in {"file", "folder"}:
+                continue
+            key = param.get("key")
+            label = param.get("label") or key
+            path = str(parameters.get(key, param.get("default", "")) or "").strip()
+            if param.get("required") and not path:
+                raise ValueError(f"请选择{'文件' if param_type == 'file' else '文件夹'}: {label}")
+            if not path:
+                continue
+            path_obj = Path(path)
+            if param_type == "folder":
+                if not path_obj.is_dir():
+                    raise ValueError(f"文件夹不存在: {path}")
+            else:
+                if not path_obj.is_file():
+                    raise ValueError(f"文件不存在: {path}")
+                if not self._matches_file_filters(path, param.get("filters")):
+                    filters = " ".join(param.get("filters") or ["*.*"])
+                    raise ValueError(f"文件类型不符合要求: {label} ({filters})")
         sheet_issues = self._sheet_validation_issues()
         if sheet_issues:
             self._show_sheet_mapping()
             raise ValueError("预设工作表在文件中不存在，请在高级设置中修正：" + "、".join(sheet_issues))
 
+    def _build_current_runtime_workflow(self):
+        file_paths = self._collect_file_paths()
+        data_sources = self._collect_data_sources()
+        parameters = self._collect_parameters()
+        self._validate_inputs(file_paths, parameters)
+        runtime_workflow = build_runtime_workflow(
+            self.workflow, file_paths, data_sources, parameters
+        )
+        return runtime_workflow, file_paths, data_sources, parameters
+
+    def save_current_config(self):
+        if not self.workflow or not self.workflow_path:
+            return
+        try:
+            runtime_workflow, _file_paths, _data_sources, _parameters = self._build_current_runtime_workflow()
+            self.workflow = runtime_workflow
+            save_workflow_json(self.workflow_path, runtime_workflow)
+            self.status_label.setText("当前配置已保存")
+            self.log("[保存] 已写回 JSON 路径、Sheet 和参数")
+        except Exception as exc:
+            self.status_label.setText("无法保存")
+            QMessageBox.warning(self, "无法保存", str(exc))
+
     def run_workflow(self):
         if not self.workflow:
             return
         try:
-            file_paths = self._collect_file_paths()
-            data_sources = self._collect_data_sources()
-            parameters = self._collect_parameters()
-            self._validate_inputs(file_paths)
-            runtime_workflow = build_runtime_workflow(
-                self.workflow, file_paths, data_sources, parameters
-            )
+            runtime_workflow, file_paths, data_sources, parameters = self._build_current_runtime_workflow()
             payload = build_crpa_payload(runtime_workflow, file_paths, data_sources, parameters)
+            payload["crpa_code"] = self.crpa_code
+            payload["crpa_name"] = self.name
             print("CRPA payload:", json.dumps(payload, ensure_ascii=False, indent=2))
-            self.log("[CRPA] " + json.dumps({"code": payload["crpa_code"], "name": payload["crpa_name"]}, ensure_ascii=False))
+            self.log("[CRPA] " + json.dumps({"code": self.crpa_code, "name": self.name}, ensure_ascii=False))
             self.log("[运行] 开始执行工作流")
             if self.writeback_check.isChecked() and self.workflow_path:
                 self.workflow = runtime_workflow

@@ -64,10 +64,19 @@ class OperatorContext:
     output_meta 保存不含真实 data 的输出元信息，供下游推导 inputs 使用。
     """
 
-    def __init__(self):
+    def __init__(self, log_callback=None):
         self.data_pool: dict[tuple[str, str], Any] = {}
         self.node_outputs_index: dict[str, list[str]] = {}
         self.output_meta: dict[str, list[OperatorOutput]] = {}
+        self._log_callback = log_callback
+
+    def set_log_callback(self, log_callback=None):
+        self._log_callback = log_callback
+
+    def log(self, message):
+        if not callable(self._log_callback):
+            return
+        self._log_callback(str(message))
 
     def clear_node_outputs(self, node_id: str):
         """清除某个节点上一次运行产生的所有输出数据，但不碰节点配置。"""

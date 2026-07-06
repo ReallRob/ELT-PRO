@@ -469,17 +469,20 @@ class CodeBlockOperator(BaseOperator):
             tables["df"] = next(iter(tables.values()))
         configured_outputs = [item for item in params.get("outputs") or [] if isinstance(item, dict)]
         output_names = [str(item.get("name") or "") for item in configured_outputs]
+        log_callback = getattr(context, "log", None)
         result = code_block(
             tables,
             params.get("code", ""),
             workbooks,
             worksheets,
             params.get("global_code", ""),
+            params.get("function_spaces") or [],
             params.get("state", {}),
             params.get("runtime_parameters"),
             params.get("parameter_mappings"),
             params.get("timeout_seconds", 10),
             output_names,
+            log_callback=log_callback,
         )
         if isinstance(params.get("state"), dict):
             params["state"].clear()

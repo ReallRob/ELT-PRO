@@ -134,6 +134,8 @@ class NodeConfigMixin:
             panel.update_combos([item["name"] for item in incoming_refs])
         if hasattr(panel, "set_global_code"):
             panel.set_global_code(getattr(self, "global_code", ""))
+        if hasattr(panel, "set_function_spaces"):
+            panel.set_function_spaces(getattr(self, "function_spaces", []))
         if hasattr(panel, "set_bound_node_id"):
             panel.set_bound_node_id(getattr(node, "node_id", ""))
 
@@ -147,10 +149,25 @@ class NodeConfigMixin:
         if hasattr(self, "status_label"):
             self.status_label.setText("全局函数已更新，工作流待运行")
 
+    def on_function_spaces_changed(self, function_spaces):
+        self.function_spaces = copy.deepcopy(function_spaces or [])
+        if hasattr(self.ctx, "set_function_spaces"):
+            self.ctx.set_function_spaces(self.function_spaces)
+        for panel in getattr(self, "panel_instances", {}).values():
+            if hasattr(panel, "set_function_spaces"):
+                panel.set_function_spaces(self.function_spaces)
+        if hasattr(self, "status_label"):
+            self.status_label.setText("函数库已更新，工作流待运行")
+
     def on_code_editor_saved(self, node_id, code, global_code):
+        self.on_code_editor_saved_with_spaces(node_id, code, global_code, None)
+
+    def on_code_editor_saved_with_spaces(self, node_id, code, global_code, function_spaces=None):
         node = self._find_node_by_id(node_id)
         if node is None or node.action_type != "code_block":
             return
+        if function_spaces is not None:
+            self.on_function_spaces_changed(function_spaces)
         params = self._params_for_code_editor_node(node, code)
         self._store_node_params(node, "code_block", params, mark_dirty=True)
         if self._current_live_node() is node:
@@ -171,10 +188,16 @@ class NodeConfigMixin:
         return params
 
     def on_code_editor_run_requested(self, node_id, code, global_code):
+        self.on_code_editor_run_requested_with_spaces(node_id, code, global_code, None)
+
+    def on_code_editor_run_requested_with_spaces(self, node_id, code, global_code, function_spaces=None):
         node = self._find_node_by_id(node_id)
         if node is None or node.action_type != "code_block":
             return
-        self.on_global_code_changed(global_code)
+        if function_spaces is None:
+            self.on_global_code_changed(global_code)
+        if function_spaces is not None:
+            self.on_function_spaces_changed(function_spaces)
         params = self._params_for_code_editor_node(node, code)
         self._store_node_params(node, "code_block", params, mark_dirty=True)
         if self._current_live_node() is node:
@@ -339,6 +362,17 @@ class NodeConfigMixin:
 
     def _run_node(self, node):
         active_panel = self.panel_instances.get(node.action_type) if node is not None else None
+
+        def code_editor_log_callback(message):
+            text = str(message or "")
+            if not (
+                text.startswith("代码块输出:")
+                or text.startswith("代码块错误输出:")
+            ):
+                return
+            if active_panel and hasattr(active_panel, "append_code_editor_log"):
+                active_panel.append_code_editor_log(node.node_id, text)
+
         if active_panel and hasattr(active_panel, "set_code_editor_running"):
             active_panel.set_code_editor_running(node.node_id, "正在运行当前代码块...")
         if getattr(node, "action_type", "") == "code_block" and hasattr(self, "status_label"):
@@ -353,11 +387,16 @@ class NodeConfigMixin:
                 active_panel.set_code_editor_run_result(node.node_id, False, message)
             return False, message
 
-        result = self.ctx.run_workflow_sync(config, keep_intermediates=True)
+        result = self.ctx.run_workflow_sync(
+            config,
+            keep_intermediates=True,
+            log_callback=code_editor_log_callback,
+        )
         if not result.get("success"):
             logs = "\n".join(result.get("logs") or [])
-            message = logs[-2000:] if logs else "节点执行失败"
-            QMessageBox.critical(self, "运行失败", message)
+            message = logs if logs else "节点执行失败"
+            dialog_message = message[-2000:] if len(message) > 2000 else message
+            QMessageBox.critical(self, "运行失败", dialog_message)
             if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
                 active_panel.set_code_editor_run_result(node.node_id, False, message)
             return False, message
@@ -474,6 +513,8 @@ class NodeConfigMixin:
         self.ctx.set_runtime_parameters(parameters, mappings)
         if hasattr(self.ctx, "set_global_code"):
             self.ctx.set_global_code(getattr(self, "global_code", ""))
+        if hasattr(self.ctx, "set_function_spaces"):
+            self.ctx.set_function_spaces(getattr(self, "function_spaces", []))
         self.runtime_parameters = copy.deepcopy(parameters)
         self.parameter_mappings = copy.deepcopy(mappings)
         if (

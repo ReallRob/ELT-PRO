@@ -1,28 +1,36 @@
 """Panel for the experimental multi-input code block operator."""
 
 import copy
+import traceback
 import keyword
 import re
 
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor
 from PyQt5.QtWidgets import (
+    QApplication,
+    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QScrollArea,
     QSizePolicy,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from core.dataframe_ops.code_exec import PRESET_IMPORT_SNIPPET, SUPPORTED_IMPORT_ROOTS_TEXT
 from operators.base_panel import BaseToolPanel, QLineEdit
 
 
@@ -58,6 +66,57 @@ def _valid_alias(alias):
         and not keyword.iskeyword(text)
         and text not in _RESERVED_ALIASES
     )
+
+
+def _default_function_space(code=""):
+    return {
+        "id": "legacy_global",
+        "name": "旧全局函数",
+        "namespace": "global_funcs",
+        "enabled": True,
+        "expose_globals": True,
+        "code": str(code or ""),
+    }
+
+
+def _new_function_space(index=1):
+    return {
+        "id": f"space_{index}",
+        "name": f"函数空间{index}",
+        "namespace": f"funcs{index}",
+        "enabled": True,
+        "expose_globals": False,
+        "code": "",
+    }
+
+
+def _normalize_function_spaces(function_spaces=None, legacy_global_code=""):
+    spaces = []
+    for index, item in enumerate(function_spaces or [], start=1):
+        if not isinstance(item, dict):
+            continue
+        namespace = str(item.get("namespace") or item.get("id") or f"funcs{index}").strip()
+        if not namespace or not _valid_alias(namespace):
+            namespace = f"funcs{index}"
+        spaces.append(
+            {
+                "id": str(item.get("id") or namespace or f"space_{index}"),
+                "name": str(item.get("name") or namespace or f"函数空间{index}"),
+                "namespace": namespace,
+                "enabled": bool(item.get("enabled", True)),
+                "expose_globals": bool(item.get("expose_globals", False)),
+                "code": str(item.get("code") or ""),
+            }
+        )
+    if not spaces and str(legacy_global_code or "").strip():
+        spaces.append(_default_function_space(legacy_global_code))
+    if not spaces:
+        spaces.append(_new_function_space(1))
+    return spaces
+
+
+def _function_names_from_code(code):
+    return re.findall(r"^\s*def\s+([A-Za-z_]\w*)\s*\(", str(code or ""), flags=re.MULTILINE)
 
 
 class PythonCodeEditor(QPlainTextEdit):
@@ -161,14 +220,27 @@ class PythonCodeEditor(QPlainTextEdit):
 
 
 class CodeEditorDialog(QDialog):
-    def __init__(self, code="", global_code="", parameters=None, mappings=None, parent=None):
+    def __init__(
+        self,
+        code="",
+        global_code="",
+        function_spaces=None,
+        input_refs=None,
+        parameters=None,
+        mappings=None,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("编辑代码")
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
-        self.resize(820, 560)
+        self.resize(1080, 640)
         self._runtime_parameters = parameters or {}
         self._parameter_mappings = mappings or {}
+        self._input_refs = [item for item in (input_refs or []) if isinstance(item, dict)]
+        self._function_spaces = _normalize_function_spaces(function_spaces, global_code)
+        self._current_space_index = 0
+        self._loading_space = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 12, 12, 12)
@@ -182,42 +254,46 @@ class CodeEditorDialog(QDialog):
         btn_param.clicked.connect(self._show_parameter_menu)
         btn_template = QPushButton("插入示例")
         btn_template.clicked.connect(self._insert_example)
+        btn_check = QPushButton("检查函数库")
+        btn_check.clicked.connect(self._check_function_spaces)
         self.btn_run = QPushButton("运行")
         self.btn_run.setObjectName("primary_execute")
         self.summary_label = QLabel("")
         self.summary_label.setStyleSheet("color: #64748B; font-size: 12px;")
         self.run_status_label = QLabel("")
         self.run_status_label.setWordWrap(True)
+        self.run_status_label.setMinimumHeight(20)
+        self.run_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.run_status_label.hide()
-
+        self._last_run_detail = ""
+        self.run_status_container = self._build_run_status_container()
+ 
         toolbar.addWidget(btn_param)
         toolbar.addWidget(btn_template)
+        toolbar.addWidget(btn_check)
         toolbar.addWidget(self.btn_run)
         toolbar.addStretch(1)
         toolbar.addWidget(self.summary_label)
         layout.addLayout(toolbar)
-        layout.addWidget(self.run_status_label)
+        layout.addWidget(self.run_status_container)
 
         font = QFont("Consolas", 10)
         font.setStyleHint(QFont.Monospace)
         self.tabs = QTabWidget()
-        self.global_editor = self._make_editor(
-            global_code,
-            "定义所有代码块可复用的函数和常量。函数内部可以 return，顶层不要直接 return。\n"
-            "可用：pd、np、re、math、datetime/date/timedelta、openpyxl、copy/deepcopy、params、state、param()。\n"
-            "允许 import 已打包库：pandas、numpy、openpyxl、re、math、datetime、copy。"
-        )
         self.editor = self._make_editor(
             code,
-            "当前代码块的主函数体，可直接 return。\n"
-            "推荐：return {'明细表': df}\n"
-            "没有 return 时：优先 result；接入模板则默认输出 wb；否则输出 df。"
+            "当前代码块可以直接写脚本，也可以 return 输出。\n"
+            "推荐：result = df 或 return {'明细表': df}\n"
+            "没有输出时允许保存；有下游节点时请提供 result、df/wb 或 return。"
         )
-        self.global_editor.setFont(font)
         self.editor.setFont(font)
-        self.tabs.addTab(self.editor, "当前代码")
-        self.tabs.addTab(self.global_editor, "全局函数")
-        self.tabs.setCurrentWidget(self.editor)
+        self.current_page = self._build_current_code_page()
+        self.function_page = self._build_function_page(font)
+        self.help_page = self._build_help_page()
+        self.tabs.addTab(self.current_page, "当前代码")
+        self.tabs.addTab(self.function_page, "函数库")
+        self.tabs.addTab(self.help_page, "说明")
+        self.tabs.setCurrentWidget(self.current_page)
         layout.addWidget(self.tabs, stretch=1)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -232,7 +308,11 @@ class CodeEditorDialog(QDialog):
         return self.editor.toPlainText()
 
     def global_code(self):
-        return self.global_editor.toPlainText()
+        return ""
+
+    def function_spaces(self):
+        self._save_current_space()
+        return copy.deepcopy(self._function_spaces)
 
     def _make_editor(self, text, placeholder):
         editor = PythonCodeEditor()
@@ -247,35 +327,466 @@ class CodeEditorDialog(QDialog):
         )
         return editor
 
+    def _make_readonly_panel(self, text):
+        panel = QPlainTextEdit(str(text or ""))
+        panel.setReadOnly(True)
+        panel.setLineWrapMode(QPlainTextEdit.NoWrap)
+        panel.setStyleSheet(
+            "QPlainTextEdit { background: #F8FAFC; color: #334155; "
+            "border: 1px solid #E2E8F0; border-radius: 6px; padding: 8px; font-size: 12px; }"
+        )
+        return panel
+
+    def _build_help_page(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+        scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        content = QWidget()
+        layout = QHBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+
+        output_examples = (
+            "result = df\n"
+            "return df\n"
+            "return {'明细': df, '汇总': summary_df}\n"
+            "result = wb\n"
+            "return wb\n"
+            "return {'模板': wb}"
+        )
+        left_layout.addWidget(
+            self._assist_group(
+                "当前输入",
+                self._input_info_text(),
+                insertable=False,
+                min_height=110,
+                max_height=180,
+            )
+        )
+        left_layout.addWidget(
+            self._assist_group(
+                "输出写法",
+                output_examples,
+                insertable=True,
+                min_height=120,
+                max_height=190,
+            )
+        )
+        left_layout.addStretch(1)
+
+        right_layout.addWidget(
+            self._assist_group(
+                "已预置库",
+                PRESET_IMPORT_SNIPPET,
+                insertable=True,
+                min_height=160,
+                max_height=230,
+            )
+        )
+        right_layout.addWidget(
+            self._assist_group(
+                "支持 import",
+                SUPPORTED_IMPORT_ROOTS_TEXT,
+                insertable=False,
+                min_height=120,
+                max_height=190,
+            )
+        )
+        right_layout.addStretch(1)
+
+        layout.addWidget(left, stretch=1)
+        layout.addWidget(right, stretch=1)
+        scroll.setWidget(content)
+        return scroll
+
+    def _assist_group(self, title, text, insertable=False, min_height=78, max_height=150):
+        box = QFrame()
+        box.setObjectName("assist_group")
+        box.setStyleSheet(
+            "QFrame#assist_group { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; }"
+            "QLabel#assist_title { color: #334155; font-weight: bold; border: none; }"
+            "QPushButton { padding: 3px 8px; min-height: 22px; }"
+        )
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        title_label = QLabel(title)
+        title_label.setObjectName("assist_title")
+        header.addWidget(title_label)
+        header.addStretch(1)
+        if insertable:
+            btn_insert = QPushButton("插入")
+            btn_insert.clicked.connect(lambda checked=False, value=text: self._insert_text(str(value) + "\n"))
+            header.addWidget(btn_insert)
+        btn_copy = QPushButton("复制")
+        btn_copy.clicked.connect(lambda checked=False, value=text: QApplication.clipboard().setText(str(value)))
+        header.addWidget(btn_copy)
+        layout.addLayout(header)
+        body = QPlainTextEdit(str(text or ""))
+        body.setReadOnly(True)
+        body.setLineWrapMode(QPlainTextEdit.NoWrap)
+        body.setMinimumHeight(min_height)
+        body.setMaximumHeight(max_height)
+        body.setStyleSheet(
+            "QPlainTextEdit { background: #FFFFFF; color: #1F2937; "
+            "border: 1px solid #E5E7EB; border-radius: 5px; padding: 6px; font-family: Consolas; }"
+        )
+        layout.addWidget(body)
+        return box
+
+    def _input_info_text(self):
+        lines = []
+        for item in self._input_refs:
+            name = str(item.get("name") or "输入")
+            role = str(item.get("role") or "")
+            data_type = str(item.get("data_type") or "table")
+            alias = role or ("wb" if data_type == "workbook" else "df")
+            type_label = "Workbook" if data_type == "workbook" else "DataFrame"
+            lines.append(f"{alias}  # {type_label}: {name}")
+            if data_type == "workbook":
+                sheet_name = str(item.get("sheet_name") or "active")
+                ws_alias = str(item.get("ws_alias") or "")
+                if ws_alias:
+                    lines.append(f"{ws_alias}  # Worksheet: {alias}[{sheet_name!r}]")
+        if lines:
+            return "\n".join(lines)
+        return "暂无输入\n可以只运行脚本；需要给下游节点时，赋值 result 或 return 新建的 DataFrame/Workbook。"
+
+    def _build_current_code_page(self):
+        return self.editor
+
+    def _build_function_page(self, font):
+        page = QWidget()
+        outer = QHBoxLayout(page)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(8)
+
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+        self.space_list = QListWidget()
+        self.space_list.currentRowChanged.connect(self._on_space_selected)
+        btn_add = QPushButton("新建空间")
+        btn_add.clicked.connect(self._add_space)
+        btn_delete = QPushButton("删除空间")
+        btn_delete.clicked.connect(self._delete_space)
+        left_layout.addWidget(self.space_list, stretch=1)
+        left_layout.addWidget(btn_add)
+        left_layout.addWidget(btn_delete)
+
+        middle = QWidget()
+        mid_layout = QVBoxLayout(middle)
+        mid_layout.setContentsMargins(0, 0, 0, 0)
+        mid_layout.setSpacing(6)
+        form = QFormLayout()
+        self.space_name_input = QLineEdit()
+        self.space_namespace_input = QLineEdit()
+        self.space_enabled_checkbox = QCheckBox("启用")
+        self.space_expose_checkbox = QCheckBox("允许直接调用旧函数")
+        self.space_name_input.textChanged.connect(self._on_space_meta_changed)
+        self.space_namespace_input.textChanged.connect(self._on_space_meta_changed)
+        self.space_enabled_checkbox.toggled.connect(self._on_space_meta_changed)
+        self.space_expose_checkbox.toggled.connect(self._on_space_meta_changed)
+        form.addRow("空间名称:", self.space_name_input)
+        form.addRow("命名空间:", self.space_namespace_input)
+        form.addRow("状态:", self.space_enabled_checkbox)
+        form.addRow("兼容:", self.space_expose_checkbox)
+        self.space_editor = self._make_editor("", "在这里编写当前函数空间的函数。函数内部可以 return，顶层不要直接 return。")
+        self.space_editor.setFont(font)
+        self.space_editor.textChanged.connect(self._refresh_function_list)
+        self.global_editor = self.space_editor
+        mid_layout.addLayout(form)
+        mid_layout.addWidget(self.space_editor, stretch=1)
+
+        self.function_list_panel = self._make_readonly_panel("")
+        outer.addWidget(left, stretch=1)
+        outer.addWidget(middle, stretch=3)
+        outer.addWidget(self.function_list_panel, stretch=1)
+        self._refresh_space_list()
+        return page
+
     def _refresh_summary(self):
         code = self.editor.toPlainText()
-        global_code = self.global_editor.toPlainText() if hasattr(self, "global_editor") else ""
         code_lines = 0 if not code else len(code.splitlines())
-        global_lines = 0 if not global_code else len(global_code.splitlines())
-        self.summary_label.setText(f"全局 {global_lines} 行 · 当前 {code_lines} 行")
+        space_lines = sum(len(str(space.get("code") or "").splitlines()) for space in getattr(self, "_function_spaces", []) or [])
+        space_count = len(getattr(self, "_function_spaces", []) or [])
+        self.summary_label.setText(f"函数空间 {space_count} 个 / {space_lines} 行 · 当前 {code_lines} 行")
+
+    def _space_label(self, space):
+        enabled = "✓" if space.get("enabled", True) else "○"
+        name = str(space.get("name") or "函数空间")
+        namespace = str(space.get("namespace") or "")
+        return f"{enabled} {name}\n{namespace}"
+
+    def _refresh_space_list(self):
+        if not hasattr(self, "space_list"):
+            return
+        current = max(0, min(self._current_space_index, len(self._function_spaces) - 1))
+        self.space_list.blockSignals(True)
+        self.space_list.clear()
+        for space in self._function_spaces:
+            item = QListWidgetItem(self._space_label(space))
+            item.setToolTip(str(space.get("namespace") or ""))
+            self.space_list.addItem(item)
+        self.space_list.setCurrentRow(current if self._function_spaces else -1)
+        self.space_list.blockSignals(False)
+        self._load_space(current)
+
+    def _save_current_space(self):
+        if self._loading_space or not hasattr(self, "space_editor"):
+            return
+        if not self._function_spaces:
+            return
+        index = max(0, min(self._current_space_index, len(self._function_spaces) - 1))
+        space = self._function_spaces[index]
+        namespace = self.space_namespace_input.text().strip() or str(space.get("namespace") or f"funcs{index + 1}")
+        if not _valid_alias(namespace):
+            namespace = str(space.get("namespace") or f"funcs{index + 1}")
+        if not _valid_alias(namespace):
+            namespace = f"funcs{index + 1}"
+        space["name"] = self.space_name_input.text().strip() or f"函数空间{index + 1}"
+        space["namespace"] = namespace
+        space["enabled"] = self.space_enabled_checkbox.isChecked()
+        space["expose_globals"] = self.space_expose_checkbox.isChecked()
+        space["code"] = self.space_editor.toPlainText()
+
+    def _load_space(self, index):
+        if not self._function_spaces or not hasattr(self, "space_editor"):
+            return
+        index = max(0, min(index, len(self._function_spaces) - 1))
+        self._current_space_index = index
+        space = self._function_spaces[index]
+        self._loading_space = True
+        self.space_name_input.setText(str(space.get("name") or f"函数空间{index + 1}"))
+        self.space_namespace_input.setText(str(space.get("namespace") or f"funcs{index + 1}"))
+        self.space_enabled_checkbox.setChecked(bool(space.get("enabled", True)))
+        self.space_expose_checkbox.setChecked(bool(space.get("expose_globals", False)))
+        self.space_editor.setPlainText(str(space.get("code") or ""))
+        self.space_editor.document().setModified(False)
+        self._loading_space = False
+        self._refresh_function_list()
+
+    def _on_space_selected(self, index):
+        if index < 0 or self._loading_space:
+            return
+        self._save_current_space()
+        self._load_space(index)
+
+    def _on_space_meta_changed(self):
+        if self._loading_space:
+            return
+        self._save_current_space()
+        row = self.space_list.currentRow() if hasattr(self, "space_list") else -1
+        if row >= 0 and row < self.space_list.count():
+            self.space_list.item(row).setText(self._space_label(self._function_spaces[row]))
+        self._refresh_summary()
+
+    def _add_space(self):
+        self._save_current_space()
+        self._function_spaces.append(_new_function_space(len(self._function_spaces) + 1))
+        self._current_space_index = len(self._function_spaces) - 1
+        self._refresh_space_list()
+        self._refresh_summary()
+
+    def _delete_space(self):
+        if len(self._function_spaces) <= 1:
+            QMessageBox.information(self, "无法删除", "至少保留一个函数空间。")
+            return
+        row = self.space_list.currentRow() if hasattr(self, "space_list") else self._current_space_index
+        row = max(0, min(row, len(self._function_spaces) - 1))
+        self._function_spaces.pop(row)
+        self._current_space_index = max(0, row - 1)
+        self._refresh_space_list()
+        self._refresh_summary()
+
+    def _refresh_function_list(self):
+        if self._loading_space:
+            return
+        self._save_current_space()
+        if not hasattr(self, "function_list_panel"):
+            return
+        index = max(0, min(self._current_space_index, len(self._function_spaces) - 1))
+        space = self._function_spaces[index] if self._function_spaces else {}
+        namespace = str(space.get("namespace") or "funcs")
+        names = _function_names_from_code(space.get("code") or "")
+        lines = ["函数列表"]
+        if names:
+            lines.extend(f"{namespace}.{name}(...)" for name in names)
+        else:
+            lines.append("暂无 def 函数")
+        lines.append("\n调用建议")
+        lines.append(f"{namespace}.函数名(...)")
+        self.function_list_panel.setPlainText("\n".join(lines))
+        self._refresh_summary()
+
+    def _check_function_spaces(self):
+        self._save_current_space()
+        errors = []
+        namespaces = set()
+        for index, space in enumerate(self._function_spaces or [], start=1):
+            namespace = str(space.get("namespace") or "").strip()
+            label = str(space.get("name") or f"函数空间{index}")
+            if not _valid_alias(namespace):
+                errors.append(f"{label}: 命名空间无效 {namespace!r}")
+            elif namespace in namespaces:
+                errors.append(f"{label}: 命名空间重复 {namespace}")
+            namespaces.add(namespace)
+            code = str(space.get("code") or "")
+            if code.strip():
+                try:
+                    compile(code, f"<函数空间:{namespace or index}>", "exec")
+                except Exception:
+                    errors.append(f"{label}:\n{traceback.format_exc(limit=1).strip()}")
+        if errors:
+            self.set_run_status("error", "函数库检查失败：\n" + "\n".join(errors))
+        else:
+            self.set_run_status("success", f"函数库检查通过，共 {len(self._function_spaces or [])} 个空间。")
+
+    def _build_run_status_container(self):
+        container = QFrame()
+        container.setVisible(False)
+        container.setObjectName("run_status_container")
+        container.setMinimumHeight(36)
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(8, 7, 8, 7)
+        layout.setSpacing(6)
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self.run_status_label, stretch=1)
+        self.btn_toggle_error = QPushButton("详情")
+        self.btn_toggle_error.clicked.connect(self._toggle_error_detail)
+        self.btn_copy_error = QPushButton("复制详情")
+        self.btn_copy_error.clicked.connect(self._copy_error_detail)
+        row.addWidget(self.btn_toggle_error)
+        row.addWidget(self.btn_copy_error)
+        layout.addLayout(row)
+        self.error_detail_box = QPlainTextEdit()
+        self.error_detail_box.setReadOnly(True)
+        self.error_detail_box.setMaximumHeight(220)
+        self.error_detail_box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.error_detail_box.setVisible(False)
+        self.error_detail_box.setStyleSheet(
+            "QPlainTextEdit { background: #FFF7F7; color: #991B1B; "
+            "border: 1px solid #FECACA; border-radius: 6px; padding: 8px; font-family: Consolas; }"
+        )
+        layout.addWidget(self.error_detail_box)
+        self.run_log_box = QPlainTextEdit()
+        self.run_log_box.setReadOnly(True)
+        self.run_log_box.setMaximumHeight(180)
+        self.run_log_box.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.run_log_box.setPlaceholderText("print 输出会实时显示在这里")
+        self.run_log_box.setVisible(False)
+        self.run_log_box.setStyleSheet(
+            "QPlainTextEdit { background: #0F172A; color: #D1FAE5; "
+            "border: 1px solid #334155; border-radius: 6px; padding: 8px; font-family: Consolas; }"
+        )
+        layout.addWidget(self.run_log_box)
+        self.btn_toggle_error.hide()
+        self.btn_copy_error.hide()
+        return container
+
+    def _error_summary(self, detail):
+        lines = [line.strip() for line in str(detail or "").splitlines() if line.strip()]
+        if not lines:
+            return "运行失败"
+        for line in reversed(lines):
+            if re.match(r"^[A-Za-z_][\w.]*Error[:：]", line) or line.startswith(("NameError", "ValueError", "TypeError", "SyntaxError")):
+                return line
+        return lines[-1] if len(lines[-1]) <= 160 else lines[-1][:157] + "..."
+
+    def _toggle_error_detail(self):
+        visible = not self.error_detail_box.isVisible()
+        self.error_detail_box.setVisible(visible)
+        self.btn_toggle_error.setText("收起" if visible else "详情")
+
+    def _copy_error_detail(self):
+        QApplication.clipboard().setText(self._last_run_detail or self.run_status_label.text())
+
+    def clear_run_log(self):
+        if not hasattr(self, "run_log_box"):
+            return
+        self.run_log_box.clear()
+        self.run_log_box.setVisible(False)
+
+    def append_run_log(self, message):
+        if not hasattr(self, "run_log_box"):
+            return
+        text = str(message or "")
+        if not text:
+            return
+        self.run_status_container.setVisible(True)
+        self.run_log_box.setVisible(True)
+        self.run_log_box.appendPlainText(text)
+        cursor = self.run_log_box.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.run_log_box.setTextCursor(cursor)
+        self.run_log_box.updateGeometry()
+        self.run_status_container.updateGeometry()
 
     def set_run_status(self, status, message=""):
         text = str(message or "").strip()
-        self.run_status_label.setVisible(bool(text))
-        self.run_status_label.setText(text)
         styles = {
-            "running": "color: #1D4ED8; background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 6px; padding: 7px 8px;",
-            "success": "color: #047857; background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; padding: 7px 8px;",
-            "error": "color: #B91C1C; background: #FEF2F2; border: 1px solid #FECACA; border-radius: 6px; padding: 7px 8px;",
-            "info": "color: #475569; background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 7px 8px;",
+            "running": (
+                "QFrame#run_status_container { background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 6px; }"
+                "QLabel { color: #1D4ED8; border: none; background: transparent; }"
+            ),
+            "success": (
+                "QFrame#run_status_container { background: #ECFDF5; border: 1px solid #A7F3D0; border-radius: 6px; }"
+                "QLabel { color: #047857; border: none; background: transparent; }"
+            ),
+            "error": (
+                "QFrame#run_status_container { background: #FEF2F2; border: 1px solid #FECACA; border-radius: 6px; }"
+                "QLabel { color: #B91C1C; border: none; background: transparent; }"
+            ),
+            "info": (
+                "QFrame#run_status_container { background: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; }"
+                "QLabel { color: #475569; border: none; background: transparent; }"
+            ),
         }
-        self.run_status_label.setStyleSheet(styles.get(str(status or "info"), styles["info"]))
+        status = str(status or "info")
+        if status == "running":
+            self.clear_run_log()
+        is_error = status == "error"
+        self._last_run_detail = text if is_error else ""
+        display_text = self._error_summary(text) if is_error else text
+        has_log = hasattr(self, "run_log_box") and bool(self.run_log_box.toPlainText())
+        self.run_status_container.setVisible(bool(text) or has_log)
+        self.run_status_label.setVisible(bool(text))
+        self.run_status_label.setText(display_text)
+        self.run_status_container.setStyleSheet(styles.get(str(status or "info"), styles["info"]))
+        self.btn_toggle_error.setVisible(is_error and bool(text))
+        self.btn_copy_error.setVisible(is_error and bool(text))
+        self.error_detail_box.setPlainText(text)
+        self.error_detail_box.setVisible(False)
+        self.btn_toggle_error.setText("详情")
         self.btn_run.setEnabled(str(status or "") != "running")
+        self.run_status_label.updateGeometry()
+        self.run_status_container.updateGeometry()
 
     def _insert_text(self, text):
-        editor = self.tabs.currentWidget() if hasattr(self, "tabs") else self.editor
+        editor = self.space_editor if hasattr(self, "tabs") and self.tabs.currentWidget() is getattr(self, "function_page", None) else self.editor
         cursor = editor.textCursor()
         cursor.insertText(text)
         editor.setTextCursor(cursor)
         editor.setFocus()
 
     def _insert_example(self):
-        if self.tabs.currentWidget() is self.global_editor:
+        if self.tabs.currentWidget() is getattr(self, "function_page", None):
             self._insert_text("def normalize_date(value):\n    return pd.to_datetime(value, errors='coerce')\n")
         else:
             self._insert_text("return {'代码块结果': df}\n")
@@ -314,8 +825,11 @@ class CodeEditorDialog(QDialog):
 
 class CodeBlockPanel(BaseToolPanel):
     global_code_changed = pyqtSignal(str)
+    function_spaces_changed = pyqtSignal(object)
     code_editor_saved = pyqtSignal(str, str, str)
+    code_editor_saved_with_spaces = pyqtSignal(str, str, str, object)
     code_editor_run_requested = pyqtSignal(str, str, str)
+    code_editor_run_requested_with_spaces = pyqtSignal(str, str, str, object)
     use_df = False
     use_type = False
     theme_color = "#7C3AED"
@@ -331,7 +845,8 @@ class CodeBlockPanel(BaseToolPanel):
         basic_form.setVerticalSpacing(8)
         self.timeout_input = QLineEdit("10")
         self.timeout_input.setMaximumWidth(96)
-        self.timeout_input.setPlaceholderText("秒")
+        self.timeout_input.setPlaceholderText("1-3600 秒")
+        self.timeout_input.setToolTip("代码块最长运行 3600 秒，超时后会终止独立执行进程。")
         basic_form.addRow("超时:", self.timeout_input)
         basic_inner.addLayout(basic_form)
 
@@ -340,7 +855,7 @@ class CodeBlockPanel(BaseToolPanel):
         self.bindings_layout = QVBoxLayout()
         self.bindings_layout.setSpacing(6)
         input_inner.addLayout(self.bindings_layout)
-        self.input_hint = self._make_hint_label("输入彼此同级；数据表默认生成 df、df1，模板默认生成 wb、wb1。没有输入也可以运行，只要代码 return 或设置 result/df。需要工作表变量时填写 Sheet。")
+        self.input_hint = self._make_hint_label("输入彼此同级；数据表默认生成 df、df1，模板默认生成 wb、wb1。代码块可以无输出运行；有下游节点时请设置 result/df/wb 或 return。需要工作表变量时填写 Sheet。")
         input_inner.addWidget(self.input_hint)
 
         code_card, code_inner = self._make_card("代码")
@@ -362,11 +877,21 @@ class CodeBlockPanel(BaseToolPanel):
         row.addWidget(btn_edit)
         code_inner.addLayout(row)
         code_inner.addWidget(
-            self._make_hint_label("默认可用：df/dfs、wb/wbs、pd、np、re、math、datetime、openpyxl、copy/deepcopy、params、state、param()。输入都是同级变量名；允许 import 已打包库，如 from openpyxl.styles import Font；推荐 return {'输出名': df}。")
+            self._make_hint_label("代码编辑窗口的“说明”页会显示当前输入、已预置库、支持 import 和输出写法。推荐 result = df、return {'输出名': df} 或 return {'模板': wb}。")
         )
 
+        outputs_card, outputs_inner = self._make_card("输出摘要")
+        self.custom_layout.addWidget(outputs_card)
+        self.outputs_layout = QVBoxLayout()
+        self.outputs_layout.setSpacing(6)
+        outputs_inner.addLayout(self.outputs_layout)
+        outputs_inner.addWidget(
+            self._make_hint_label("运行后会显示真实输出列表；多输出时可在这里修改每个输出显示名称。")
+        )
+ 
         self.code_text = ""
         self.global_code_text = ""
+        self.function_spaces_data = []
         self._saved_outputs = []
         self._incoming_tables = []
         self._incoming_items = []
@@ -374,6 +899,7 @@ class CodeBlockPanel(BaseToolPanel):
         self._bound_node_id = ""
         self._code_editor_dialogs = {}
         self._rebuild_binding_rows([])
+        self._rebuild_output_rows([])
         self._refresh_code_summary()
 
     def update_combos(self, table_names):
@@ -406,18 +932,22 @@ class CodeBlockPanel(BaseToolPanel):
         self.timeout_input.setText("10")
         self.code_text = ""
         self._saved_outputs = []
+        self._rebuild_output_rows([])
         self._rebuild_binding_rows(self._merge_bindings(self._incoming_items, []))
         self._refresh_code_summary()
 
     def set_global_code(self, global_code=""):
         self.global_code_text = str(global_code or "")
+        if not self.function_spaces_data and self.global_code_text.strip():
+            self.function_spaces_data = _normalize_function_spaces([], self.global_code_text)
         for dialog in list(getattr(self, "_code_editor_dialogs", {}).values()):
             if dialog is None or not dialog.isVisible():
                 continue
-            if dialog.global_editor.document().isModified():
-                continue
-            dialog.global_editor.setPlainText(self.global_code_text)
-            dialog.global_editor.document().setModified(False)
+            # Open dialogs keep their own unsaved edits until Save/Run.
+        self._refresh_code_summary()
+
+    def set_function_spaces(self, function_spaces=None):
+        self.function_spaces_data = _normalize_function_spaces(function_spaces, self.global_code_text)
         self._refresh_code_summary()
 
     def set_bound_node_id(self, node_id=""):
@@ -428,6 +958,7 @@ class CodeBlockPanel(BaseToolPanel):
             self.timeout_input.setText(str(p.get("timeout_seconds") or "10"))
         self.code_text = str(p.get("code") or "")
         self._saved_outputs = copy.deepcopy([item for item in p.get("outputs") or [] if isinstance(item, dict)])
+        self._rebuild_output_rows(self._saved_outputs)
         bindings = self._bindings_from_inputs(p.get("inputs") or [])
         self._rebuild_binding_rows(self._merge_bindings(self._incoming_outputs, bindings))
         self._refresh_code_summary()
@@ -466,8 +997,11 @@ class CodeBlockPanel(BaseToolPanel):
         return prefs
 
     def _collect_outputs_for_save(self, inputs):
+        row_outputs = self._collect_output_rows()
+        if len(row_outputs) > 1:
+            return row_outputs
         if len(self._saved_outputs) > 1:
-            return copy.deepcopy(self._saved_outputs)
+            return row_outputs or copy.deepcopy(self._saved_outputs)
         name = self.out_input.text().strip() if hasattr(self, "out_input") else ""
         if not name and self._saved_outputs:
             name = str(self._saved_outputs[0].get("name") or "")
@@ -482,7 +1016,54 @@ class CodeBlockPanel(BaseToolPanel):
         self._saved_outputs = copy.deepcopy([item for item in outputs or [] if isinstance(item, dict)])
         if len(self._saved_outputs) == 1 and hasattr(self, "out_input"):
             self.out_input.setText(str(self._saved_outputs[0].get("name") or ""))
+        self._rebuild_output_rows(self._saved_outputs)
         self._refresh_code_summary()
+
+    def _collect_output_rows(self):
+        outputs = []
+        if not hasattr(self, "outputs_layout"):
+            return outputs
+        for index in range(self.outputs_layout.count()):
+            row = self.outputs_layout.itemAt(index).widget()
+            if not row or row.objectName() != "output_row":
+                continue
+            name_input = row.findChild(QLineEdit, "output_name")
+            output_id = str(row.property("output_id") or f"out_{len(outputs) + 1}")
+            data_type = str(row.property("data_type") or "table")
+            name = name_input.text().strip() if name_input else ""
+            outputs.append({"output_id": output_id, "name": name or f"代码块结果{len(outputs) + 1}", "data_type": data_type})
+        return outputs
+
+    def _rebuild_output_rows(self, outputs):
+        if not hasattr(self, "outputs_layout"):
+            return
+        self.clear_dynamic_layout(self.outputs_layout)
+        normalized = [item for item in outputs or [] if isinstance(item, dict)]
+        if not normalized:
+            label = QLabel("尚未运行，暂未识别真实输出。")
+            label.setWordWrap(True)
+            label.setStyleSheet("color: #94A3B8; padding: 8px; border: 1px dashed #CBD5E1; border-radius: 6px;")
+            self.outputs_layout.addWidget(label)
+            return
+        for index, output in enumerate(normalized, start=1):
+            row = QWidget()
+            row.setObjectName("output_row")
+            row.setProperty("output_id", str(output.get("output_id") or f"out_{index}"))
+            row.setProperty("data_type", str(output.get("data_type") or "table"))
+            line = QHBoxLayout(row)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(6)
+            tag = QLabel(f"{row.property('output_id')} · {row.property('data_type')}")
+            tag.setStyleSheet("color: #64748B; font-size: 11px; border: none;")
+            name_input = QLineEdit(str(output.get("name") or f"代码块结果{index}"))
+            name_input.setObjectName("output_name")
+            name_input.setPlaceholderText(f"代码块结果{index}")
+            name_input.setProperty("_param_disabled", True)
+            if hasattr(name_input, "set_parameter_enabled"):
+                name_input.set_parameter_enabled(False)
+            line.addWidget(tag)
+            line.addWidget(name_input, stretch=1)
+            self.outputs_layout.addWidget(row)
 
     def _default_alias(self, index):
         return "df" if index == 0 else f"df{index}"
@@ -730,12 +1311,14 @@ class CodeBlockPanel(BaseToolPanel):
         global_code = self.global_code_text or ""
         code_lines = len(code.splitlines()) if code.strip() else 0
         global_lines = len(global_code.splitlines()) if global_code.strip() else 0
-        if not code_lines and not global_lines:
+        space_count = len(self.function_spaces_data or [])
+        space_lines = sum(len(str(item.get("code") or "").splitlines()) for item in self.function_spaces_data or [])
+        if not code_lines and not global_lines and not space_lines:
             self.code_summary.setText("未编写代码")
             return
         output_count = len(getattr(self, "_saved_outputs", []) or [])
         output_text = f" · 输出 {output_count} 个" if output_count > 1 else ""
-        self.code_summary.setText(f"全局 {global_lines} 行 · 当前 {code_lines} 行{output_text}")
+        self.code_summary.setText(f"函数空间 {space_count} 个/{space_lines} 行 · 当前 {code_lines} 行{output_text}")
 
     def _open_code_editor(self):
         node_id = self._bound_node_id or str(self.property("_node_id") or "")
@@ -747,6 +1330,8 @@ class CodeBlockPanel(BaseToolPanel):
         dlg = CodeEditorDialog(
             self.code_text,
             self.global_code_text,
+            self.function_spaces_data,
+            self._collect_flow_inputs(),
             parameters=self._runtime_parameters,
             mappings=self._parameter_mappings,
             parent=self.window(),
@@ -763,23 +1348,27 @@ class CodeBlockPanel(BaseToolPanel):
     def _apply_code_editor_result(self, node_id, dialog):
         code = dialog.code()
         global_code = dialog.global_code()
+        function_spaces = dialog.function_spaces()
         if str(node_id or "") == str(self._bound_node_id or ""):
             self.code_text = code
             self.global_code_text = global_code
+            self.function_spaces_data = copy.deepcopy(function_spaces)
             self._refresh_code_summary()
-        self.global_code_changed.emit(global_code)
-        self.code_editor_saved.emit(str(node_id or ""), code, global_code)
+        self.function_spaces_changed.emit(function_spaces)
+        self.code_editor_saved_with_spaces.emit(str(node_id or ""), code, global_code, function_spaces)
 
     def _run_code_editor(self, node_id, dialog):
         code = dialog.code()
         global_code = dialog.global_code()
+        function_spaces = dialog.function_spaces()
         dialog.set_run_status("running", "正在运行当前代码块...")
         if str(node_id or "") == str(self._bound_node_id or ""):
             self.code_text = code
             self.global_code_text = global_code
+            self.function_spaces_data = copy.deepcopy(function_spaces)
             self._refresh_code_summary()
-        self.global_code_changed.emit(global_code)
-        self.code_editor_run_requested.emit(str(node_id or ""), code, global_code)
+        self.function_spaces_changed.emit(function_spaces)
+        self.code_editor_run_requested_with_spaces.emit(str(node_id or ""), code, global_code, function_spaces)
 
     def _on_code_editor_closed(self, node_id, dialog):
         if self._code_editor_dialogs.get(node_id) is dialog:
@@ -791,6 +1380,11 @@ class CodeBlockPanel(BaseToolPanel):
             dialog.set_run_status("running", message)
         self.code_summary.setText("代码块运行中...")
 
+    def append_code_editor_log(self, node_id, message):
+        dialog = self._code_editor_dialogs.get(str(node_id or ""))
+        if dialog is not None and dialog.isVisible():
+            dialog.append_run_log(message)
+
     def set_code_editor_run_result(self, node_id, success, message=""):
         status = "success" if success else "error"
         dialog = self._code_editor_dialogs.get(str(node_id or ""))
@@ -800,6 +1394,26 @@ class CodeBlockPanel(BaseToolPanel):
             self._refresh_code_summary()
         elif message:
             self.code_summary.setText("运行失败")
+
+    def _function_space_errors(self):
+        errors = []
+        namespaces = set()
+        for index, space in enumerate(self.function_spaces_data or [], start=1):
+            namespace = str(space.get("namespace") or "").strip()
+            label = str(space.get("name") or f"函数空间{index}")
+            if not _valid_alias(namespace):
+                errors.append(f"{label}: 命名空间无效 {namespace!r}")
+            elif namespace in namespaces:
+                errors.append(f"{label}: 命名空间重复 {namespace}")
+            namespaces.add(namespace)
+            code = str(space.get("code") or "")
+            if not code.strip():
+                continue
+            try:
+                compile(code, f"<函数空间:{namespace or index}>", "exec")
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+        return errors
 
     def _validate(self):
         ok, widget = super()._validate()
@@ -839,5 +1453,9 @@ class CodeBlockPanel(BaseToolPanel):
                 aliases.append(ws_alias)
         if not self.code_text.strip():
             QMessageBox.warning(self, "代码为空", "请先点击“编辑代码”编写代码。")
+            return False, None
+        function_errors = self._function_space_errors()
+        if function_errors:
+            QMessageBox.warning(self, "函数库无效", "\n".join(function_errors[:8]))
             return False, None
         return True, None

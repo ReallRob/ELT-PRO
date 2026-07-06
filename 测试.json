@@ -1,0 +1,150 @@
+{
+    "workflow_name": "UI_Draft",
+    "steps": [
+        {
+            "step_id": 1,
+            "node_id": "node_31d86036",
+            "action": "load_file",
+            "out_name": "流水明细数据",
+            "params": {
+                "out_name": "流水明细数据",
+                "file_path": "C:/Users/31162/Downloads/客户交易流水多维模拟分析表.xlsx",
+                "sheet_name": "流水明细数据",
+                "skiprows": 0,
+                "nrows": null,
+                "start_col": 1,
+                "ncols": null,
+                "has_header": true
+            },
+            "x": 100.0,
+            "y": 200.0
+        },
+        {
+            "step_id": 2,
+            "node_id": "node_026b2abc",
+            "action": "filter_data",
+            "out_name": "筛选成功",
+            "params": {
+                "df_name": "流水明细数据",
+                "col_type": "col_name",
+                "logic": "AND",
+                "conditions": [
+                    {
+                        "col": "交易状态",
+                        "op": "==",
+                        "value": "交易成功"
+                    }
+                ],
+                "out_name": "筛选成功",
+                "df_id": "node_31d86036"
+            },
+            "x": 420.0,
+            "y": 200.0
+        },
+        {
+            "step_id": 3,
+            "node_id": "node_dc7757f2",
+            "action": "pivot_table",
+            "out_name": "临时表_3",
+            "params": {
+                "df_name": "筛选成功",
+                "col_type": "col_name",
+                "index_cols": [
+                    "所属平台"
+                ],
+                "columns_col": "交易方式",
+                "values_col": "交易金额(元)",
+                "aggfunc": "sum",
+                "fill_value": 0.0,
+                "margins": false,
+                "df_id": "node_026b2abc",
+                "out_name": "临时表_3"
+            },
+            "x": 740.0,
+            "y": 200.0
+        },
+        {
+            "step_id": 4,
+            "node_id": "node_73a33e5a",
+            "action": "rank_col",
+            "out_name": "临时表_4",
+            "params": {
+                "df_name": "临时表_3",
+                "col_type": "col_name",
+                "rules": [
+                    {
+                        "col": "微信支付",
+                        "method": "min",
+                        "ascending": true,
+                        "rename": ""
+                    },
+                    {
+                        "col": "手机网银",
+                        "method": "min",
+                        "ascending": true,
+                        "rename": ""
+                    },
+                    {
+                        "col": "支付宝",
+                        "method": "min",
+                        "ascending": true,
+                        "rename": ""
+                    },
+                    {
+                        "col": "银行卡转账",
+                        "method": "min",
+                        "ascending": true,
+                        "rename": ""
+                    }
+                ],
+                "df_id": "node_dc7757f2",
+                "out_name": "临时表_4"
+            },
+            "x": 1060.0,
+            "y": 200.0
+        }
+    ],
+    "hidden_toolbox": [],
+    "hidden_context_menu": [],
+    "naming_style": "默认",
+    "crpa": {
+        "code": "9999",
+        "name": "UI_Draft"
+    },
+    "run_manifest": {
+        "file_resources": [
+            {
+                "key": "file_1",
+                "label": "客户交易流水多维模拟分析表.xlsx",
+                "role": "input",
+                "type": "excel",
+                "path": "C:/Users/31162/Downloads/客户交易流水多维模拟分析表.xlsx",
+                "required": true,
+                "filters": [
+                    "*.xlsx",
+                    "*.xls",
+                    "*.xlsm"
+                ]
+            }
+        ],
+        "data_sources": [
+            {
+                "key": "node_31d86036",
+                "label": "流水明细数据",
+                "node_id": "node_31d86036",
+                "file_key": "file_1",
+                "sheet": "流水明细数据",
+                "sheet_mode": "fixed",
+                "read_options": {
+                    "skiprows": 0,
+                    "nrows": null,
+                    "start_col": 1,
+                    "ncols": null,
+                    "has_header": true
+                }
+            }
+        ],
+        "parameters": []
+    },
+    "runtime_parameters": {}
+}

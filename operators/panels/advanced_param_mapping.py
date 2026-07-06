@@ -1,12 +1,14 @@
 """Advanced parameter mapping operator panel."""
 
 import json
+from pathlib import Path
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -20,10 +22,13 @@ from PyQt5.QtWidgets import (
 
 from core.parameters.mapping_schema import (
     DATA_TYPES,
+    MAPPING_OUTPUT_TYPES,
     build_rule_engine_config,
     coerce_parameter_rows,
     format_advanced_value,
+    format_file_filters,
     normalize_mapping_groups,
+    normalize_file_filters,
 )
 from operators.base_panel import BaseToolPanel, QLineEdit
 
@@ -35,7 +40,7 @@ class AdvancedMappingDialog(QDialog):
         ("枚举匹配", "enum"),
         ("表达式匹配", "expression"),
     ]
-    TARGET_TYPES = DATA_TYPES
+    TARGET_TYPES = MAPPING_OUTPUT_TYPES
 
     def __init__(self, field_name="", rules=None, parent=None):
         super().__init__(parent)
@@ -328,6 +333,15 @@ class AdvancedParamMappingPanel(BaseToolPanel):
     theme_color = "#455A64"
     action_name = "参数输入"
     DATA_TYPES = DATA_TYPES
+    FILE_FILTER_PRESETS = [
+        ("所有文件", ["*.*"]),
+        ("Excel", ["*.xlsx", "*.xls", "*.xlsm"]),
+        ("PDF", ["*.pdf"]),
+        ("CSV", ["*.csv"]),
+        ("Word", ["*.docx", "*.doc"]),
+        ("图片", ["*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"]),
+        ("自定义", None),
+    ]
 
     def init_custom_ui(self):
         card, inner = self._make_card("参数输入")
@@ -342,34 +356,159 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         btn_add.clicked.connect(lambda: self.add_parameter_row())
         inner.addWidget(btn_add)
 
-    def add_parameter_row(self, name="", data_type="String", value="", rules=None):
+    @staticmethod
+    def _parameter_file_dialog_filter(filters):
+        joined = " ".join(normalize_file_filters(filters))
+        return f"可选文件 ({joined});;所有文件 (*.*)"
+
+    @staticmethod
+    def _start_dir_from_text(text):
+        path = Path(str(text or "").strip())
+        if path.is_dir():
+            return str(path)
+        if str(path) and path.parent and str(path.parent) != ".":
+            return str(path.parent)
+        return ""
+
+    def _browse_parameter_path(self, row):
+        type_combo = row.findChild(QComboBox, "data_type")
+        value_input = row.findChild(QLineEdit, "input_value")
+        filters_input = row.findChild(QLineEdit, "file_filters")
+        if not type_combo or not value_input:
+            return
+        data_type = type_combo.currentText().strip()
+        current = value_input.text().strip()
+        if data_type == "Folder":
+            path = QFileDialog.getExistingDirectory(self, "选择文件夹", current or self._start_dir_from_text(current))
+        else:
+            filter_text = self._parameter_file_dialog_filter(filters_input.text() if filters_input else "")
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择文件",
+                self._start_dir_from_text(current),
+                filter_text,
+            )
+        if path:
+            value_input.setText(path)
+
+    def _update_path_controls(self, row):
+        type_combo = row.findChild(QComboBox, "data_type")
+        value_input = row.findChild(QLineEdit, "input_value")
+        browse_button = row.findChild(QPushButton, "path_browse_button")
+        filters_box = row.findChild(QWidget, "file_filters_box")
+        preset_combo = row.findChild(QComboBox, "file_filter_preset")
+        data_type = type_combo.currentText().strip() if type_combo else "String"
+        is_file = data_type == "File"
+        is_folder = data_type == "Folder"
+        if value_input:
+            if is_file:
+                value_input.setPlaceholderText("选择或输入文件路径")
+            elif is_folder:
+                value_input.setPlaceholderText("选择或输入文件夹路径")
+            else:
+                value_input.setPlaceholderText("如 1-3 / [1,2,3] / true")
+        if browse_button:
+            browse_button.setVisible(is_file or is_folder)
+            browse_button.setText("选文件夹" if is_folder else "选文件")
+        if filters_box:
+            filters_box.setVisible(is_file)
+        if preset_combo:
+            preset_combo.setVisible(is_file)
+
+    def _set_file_filter_preset(self, combo, filters):
+        normalized = normalize_file_filters(filters)
+        combo.blockSignals(True)
+        for i in range(combo.count()):
+            preset = combo.itemData(i)
+            if preset is not None and normalize_file_filters(preset) == normalized:
+                combo.setCurrentIndex(i)
+                combo.blockSignals(False)
+                return
+        combo.setCurrentText("自定义")
+        combo.blockSignals(False)
+
+    def _on_filter_preset_changed(self, row):
+        preset_combo = row.findChild(QComboBox, "file_filter_preset")
+        filters_input = row.findChild(QLineEdit, "file_filters")
+        if not preset_combo or not filters_input:
+            return
+        filters = preset_combo.currentData()
+        if filters is not None:
+            filters_input.setText(format_file_filters(filters))
+
+    def _mark_custom_filter_preset(self, row):
+        preset_combo = row.findChild(QComboBox, "file_filter_preset")
+        if not preset_combo:
+            return
+        index = preset_combo.findText("自定义")
+        if index >= 0:
+            preset_combo.blockSignals(True)
+            preset_combo.setCurrentIndex(index)
+            preset_combo.blockSignals(False)
+
+    def add_parameter_row(self, name="", data_type="String", value="", rules=None, filters=None):
         row = QFrame()
         row.setObjectName("param_input_row")
         row._mapping_rules = [dict(rule) for rule in (rules or []) if isinstance(rule, dict)]
         row.setStyleSheet("""
             QFrame#param_input_row {
-                background: #FFFFFF;
-                border: 1px solid #E3EAF2;
+                background: #F8FAFC;
+                border: 1px solid #D9E2EC;
                 border-radius: 8px;
+            }
+            QFrame#param_input_row:hover {
+                border-color: #B6C5D4;
+            }
+            QLabel#param_row_title {
+                color: #0F172A;
+                font-size: 12px;
+                font-weight: bold;
+                border: none;
+            }
+            QLabel#mapping_summary {
+                color: #64748B;
+                font-size: 11px;
+                border: none;
             }
             QLabel#param_field_label {
                 color: #64748B;
                 font-size: 11px;
                 border: none;
             }
-            QPushButton#mapping_button {
-                background: #EEF2F6;
+            QWidget#param_field_box {
+                background: transparent;
+                border: none;
+            }
+            QFrame#file_filters_box {
+                background: #FFFFFF;
+                border: 1px solid #E2E8F0;
+                border-radius: 7px;
+            }
+            QLineEdit, QComboBox {
+                min-height: 30px;
+                background: #FFFFFF;
                 border: 1px solid #CBD5E1;
                 border-radius: 6px;
-                color: #374151;
+                padding: 4px 8px;
+                color: #0F172A;
+            }
+            QLineEdit:focus, QComboBox:focus {
+                border-color: #607D8B;
+                background: #FFFFFF;
+            }
+            QPushButton#mapping_button {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                color: #334155;
                 padding: 4px 10px;
             }
             QPushButton#mapping_button:hover {
-                background: #E2E8F0;
+                background: #EEF2F6;
                 border-color: #94A3B8;
             }
             QPushButton#param_delete_button {
-                background: #FFF5F5;
+                background: #FFF7F7;
                 border: 1px solid #FED7D7;
                 border-radius: 6px;
                 color: #C53030;
@@ -379,14 +518,31 @@ class AdvancedParamMappingPanel(BaseToolPanel):
                 background: #FFE4E6;
                 border-color: #FDA4AF;
             }
+            QPushButton#path_browse_button {
+                background: #FFFFFF;
+                border: 1px solid #CBD5E1;
+                border-radius: 6px;
+                color: #334155;
+                padding: 4px 8px;
+            }
+            QPushButton#path_browse_button:hover {
+                background: #EEF2F7;
+                border-color: #94A3B8;
+            }
         """)
         layout = QVBoxLayout(row)
-        layout.setContentsMargins(10, 8, 10, 8)
-        layout.setSpacing(7)
+        layout.setContentsMargins(10, 9, 10, 10)
+        layout.setSpacing(9)
 
-        field_line = QHBoxLayout()
-        field_line.setContentsMargins(0, 0, 0, 0)
-        field_line.setSpacing(8)
+        header_line = QHBoxLayout()
+        header_line.setContentsMargins(0, 0, 0, 0)
+        header_line.setSpacing(8)
+        title = QLabel("输入参数")
+        title.setObjectName("param_row_title")
+        summary = QLabel("未配置映射")
+        summary.setObjectName("mapping_summary")
+        header_line.addWidget(title)
+        header_line.addWidget(summary, stretch=1)
 
         name_input = QLineEdit(str(name))
         name_input.setObjectName("field_name")
@@ -398,8 +554,7 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         type_combo = QComboBox()
         type_combo.setObjectName("data_type")
         type_combo.addItems(self.DATA_TYPES)
-        type_combo.setMinimumWidth(86)
-        type_combo.setMaximumWidth(112)
+        type_combo.setFixedWidth(112)
         if data_type in self.DATA_TYPES:
             type_combo.setCurrentText(data_type)
 
@@ -410,8 +565,35 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         if hasattr(value_input, "set_parameter_enabled"):
             value_input.set_parameter_enabled(False)
 
+        btn_browse = QPushButton("选文件")
+        btn_browse.setObjectName("path_browse_button")
+        btn_browse.setFixedWidth(96)
+        btn_browse.setFixedHeight(30)
+        btn_browse.clicked.connect(lambda checked=False, r=row: self._browse_parameter_path(r))
+
+        value_box = QWidget()
+        value_layout = QHBoxLayout(value_box)
+        value_layout.setContentsMargins(0, 0, 0, 0)
+        value_layout.setSpacing(6)
+        value_layout.addWidget(value_input, stretch=1)
+        value_layout.addWidget(btn_browse)
+
+        filters_input = QLineEdit(format_file_filters(filters))
+        filters_input.setObjectName("file_filters")
+        filters_input.setPlaceholderText("如 *.xlsx, *.pdf")
+        if hasattr(filters_input, "set_parameter_enabled"):
+            filters_input.set_parameter_enabled(False)
+
+        preset_combo = QComboBox()
+        preset_combo.setObjectName("file_filter_preset")
+        for label, preset in self.FILE_FILTER_PRESETS:
+            preset_combo.addItem(label, preset)
+        preset_combo.setFixedWidth(118)
+        self._set_file_filter_preset(preset_combo, filters_input.text())
+
         def make_field(label_text, widget):
             box = QWidget()
+            box.setObjectName("param_field_box")
             box_layout = QVBoxLayout(box)
             box_layout.setContentsMargins(0, 0, 0, 0)
             box_layout.setSpacing(3)
@@ -423,7 +605,7 @@ class AdvancedParamMappingPanel(BaseToolPanel):
 
         btn_mapping = QPushButton()
         btn_mapping.setObjectName("mapping_button")
-        btn_mapping.setFixedWidth(96)
+        btn_mapping.setFixedWidth(82)
         btn_mapping.setFixedHeight(28)
         btn_mapping.clicked.connect(lambda checked=False, r=row: self.open_mapping_dialog(r))
         btn_delete = QPushButton("删除")
@@ -431,35 +613,75 @@ class AdvancedParamMappingPanel(BaseToolPanel):
         btn_delete.setFixedWidth(58)
         btn_delete.setFixedHeight(28)
         btn_delete.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
+        header_line.addWidget(btn_mapping)
+        header_line.addWidget(btn_delete)
+        layout.addLayout(header_line)
 
-        field_line.addWidget(make_field("命名", name_input), stretch=2)
-        field_line.addWidget(make_field("类型", type_combo))
-        field_line.addWidget(make_field("输入", value_input), stretch=2)
+        field_line = QHBoxLayout()
+        field_line.setContentsMargins(0, 0, 0, 0)
+        field_line.setSpacing(8)
+        field_line.addWidget(make_field("命名", name_input), stretch=1)
+        field_line.addWidget(make_field("类型", type_combo), stretch=0)
         layout.addLayout(field_line)
 
-        action_line = QHBoxLayout()
-        action_line.setContentsMargins(0, 0, 0, 0)
-        action_line.setSpacing(6)
-        action_line.addStretch(1)
-        action_line.addWidget(btn_mapping)
-        action_line.addWidget(btn_delete)
-        layout.addLayout(action_line)
+        value_line = QHBoxLayout()
+        value_line.setContentsMargins(0, 0, 0, 0)
+        value_line.setSpacing(8)
+        value_line.addWidget(make_field("默认输入", value_box), stretch=1)
+        layout.addLayout(value_line)
+
+        filters_box = QFrame()
+        filters_box.setObjectName("file_filters_box")
+        filters_layout = QHBoxLayout(filters_box)
+        filters_layout.setContentsMargins(8, 7, 8, 8)
+        filters_layout.setSpacing(8)
+        filters_layout.addWidget(make_field("文件类型", preset_combo), stretch=0)
+        filters_layout.addWidget(make_field("过滤器", filters_input), stretch=1)
+        layout.addWidget(filters_box)
+        type_combo.currentTextChanged.connect(lambda _text, r=row: self._update_path_controls(r))
+        preset_combo.currentIndexChanged.connect(lambda _index, r=row: self._on_filter_preset_changed(r))
+        filters_input.textEdited.connect(lambda _text, r=row: self._mark_custom_filter_preset(r))
 
         self.param_rows.addWidget(row)
         self._attach_parameter_action(name_input)
         self._attach_parameter_action(value_input)
+        self._attach_parameter_action(filters_input)
+        self._update_path_controls(row)
         self._update_mapping_button(row)
+        self._refresh_parameter_titles()
 
     def _update_mapping_button(self, row):
         btn = row.findChild(QPushButton, "mapping_button")
-        if not btn:
+        summary = row.findChild(QLabel, "mapping_summary")
+        if not btn and not summary:
             return
         count = len(getattr(row, "_mapping_rules", []))
         case_count = sum(len(rule.get("cases", [])) for rule in getattr(row, "_mapping_rules", []))
         if count and case_count:
-            btn.setText(f"映射 {count}/{case_count}")
+            if btn:
+                btn.setText("映射")
+            if summary:
+                summary.setText(f"已配置 {count} 组 / {case_count} 条")
         else:
-            btn.setText("映射")
+            if btn:
+                btn.setText("映射")
+            if summary:
+                summary.setText("未配置映射")
+
+    def _refresh_parameter_titles(self):
+        visible_index = 1
+        for i in range(self.param_rows.count()):
+            row = self.param_rows.itemAt(i).widget()
+            if not row or row.isHidden():
+                continue
+            title = row.findChild(QLabel, "param_row_title")
+            if title:
+                title.setText(f"参数 {visible_index}")
+            visible_index += 1
+
+    def remove_dynamic_row(self, row):
+        super().remove_dynamic_row(row)
+        self._refresh_parameter_titles()
 
     def open_mapping_dialog(self, row):
         name_input = row.findChild(QLineEdit, "field_name")
@@ -482,12 +704,16 @@ class AdvancedParamMappingPanel(BaseToolPanel):
             name_input = row.findChild(QLineEdit, "field_name")
             type_combo = row.findChild(QComboBox, "data_type")
             value_input = row.findChild(QLineEdit, "input_value")
-            ui_rows.append({
+            filters_input = row.findChild(QLineEdit, "file_filters")
+            item = {
                 "fieldName": name_input.text().strip() if name_input else "",
                 "dataType": type_combo.currentText().strip() if type_combo else "String",
                 "input": value_input.text().strip() if value_input else "",
                 "rules": [dict(rule) for rule in getattr(row, "_mapping_rules", [])],
-            })
+            }
+            if item["dataType"] == "File":
+                item["filters"] = normalize_file_filters(filters_input.text() if filters_input else "")
+            ui_rows.append(item)
         return coerce_parameter_rows(ui_rows)
 
     def get_custom_params(self):
@@ -535,6 +761,7 @@ class AdvancedParamMappingPanel(BaseToolPanel):
                     "fieldName": field_name,
                     "dataType": param.get("dataType", "String"),
                     "input": param.get("input", ""),
+                    "filters": param.get("filters"),
                     "rules": rules_by_field.get(field_name, []),
                 })
         if not rows:
@@ -546,6 +773,7 @@ class AdvancedParamMappingPanel(BaseToolPanel):
                 param.get("dataType", "String"),
                 param.get("input", format_advanced_value(param.get("value", ""))),
                 param.get("rules", []),
+                param.get("filters"),
             )
 
     def _validate(self):

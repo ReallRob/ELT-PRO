@@ -1,6 +1,7 @@
 import copy
 
 from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtWidgets import QApplication
 
 from engine import WorkflowEngine
 from core.workflow.schema import normalize_action_params, normalize_output_refs
@@ -21,6 +22,7 @@ class WorkspaceContext(QObject):
         self.runtime_parameters = {}
         self.parameter_mappings = {}
         self.global_code = ""
+        self.function_spaces = []
         self.engine = None
         self._run_generation = 0
         self._discarded_engines = []
@@ -84,6 +86,7 @@ class WorkspaceContext(QObject):
         self.runtime_parameters = {}
         self.parameter_mappings = {}
         self.global_code = ""
+        self.function_spaces = []
         self._run_generation += 1
         self._discard_current_engine()
 
@@ -93,6 +96,9 @@ class WorkspaceContext(QObject):
 
     def set_global_code(self, global_code=""):
         self.global_code = str(global_code or "")
+
+    def set_function_spaces(self, function_spaces=None):
+        self.function_spaces = copy.deepcopy(function_spaces or [])
 
     def _node_output_refs(self, node):
         return normalize_output_refs(
@@ -169,6 +175,7 @@ class WorkspaceContext(QObject):
         self.workflow_config = {
             "workflow_name": "UI_Draft",
             "global_code": self.global_code,
+            "function_spaces": copy.deepcopy(self.function_spaces),
             "runtime_parameters": dict(self.runtime_parameters),
             "parameter_mappings": dict(self.parameter_mappings),
             "steps": compiled_steps,
@@ -193,12 +200,24 @@ class WorkspaceContext(QObject):
         )
         self.engine.start()
 
-    def run_workflow_sync(self, workflow_config, keep_intermediates=True):
+    def run_workflow_sync(self, workflow_config, keep_intermediates=True, log_callback=None):
         """Run a small workflow synchronously for design-time single-node execution."""
         engine = WorkflowEngine({}, workflow_config, keep_intermediates=keep_intermediates)
         messages = []
         result_holder = {"success": False, "pool": {}}
-        engine.log_signal.connect(messages.append)
+
+        def handle_log(message):
+            messages.append(message)
+            if callable(log_callback):
+                try:
+                    log_callback(message)
+                except Exception:
+                    pass
+            app = QApplication.instance()
+            if app is not None:
+                app.processEvents()
+
+        engine.log_signal.connect(handle_log)
         engine.finished_signal.connect(
             lambda success, pool: result_holder.update({"success": success, "pool": pool})
         )

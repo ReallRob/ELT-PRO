@@ -17,5 +17,10 @@ def get_config_dir():
 
 
 def get_workspace_config_path():
-    """Return the shared workspace state file path."""
+    """Return the main designer/executor workspace state file path."""
     return get_config_dir() / "workspace_config.json"
+
+
+def get_crpa_launcher_config_path():
+    """Return the isolated CRPA launcher state file path."""
+    return get_config_dir() / "crpa_launcher_config.json"

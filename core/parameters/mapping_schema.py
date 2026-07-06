@@ -12,7 +12,46 @@ from parameter_resolver import (
 
 SCHEMA_NAME = "rule-engine.parameter-mapping.v1"
 OPERATOR_NAME = "advanced_param_mapping"
-DATA_TYPES = ["Integer", "Float", "String", "Boolean", "Array", "Object"]
+MAPPING_OUTPUT_TYPES = ["Integer", "Float", "String", "Boolean", "Array", "Object"]
+DATA_TYPES = [*MAPPING_OUTPUT_TYPES, "File", "Folder"]
+TEXT_LIKE_DATA_TYPES = {"String", "File", "Folder"}
+DEFAULT_FILE_FILTERS = ["*.*"]
+
+
+def is_text_like_data_type(data_type):
+    return str(data_type or "String").strip() in TEXT_LIKE_DATA_TYPES
+
+
+def normalize_file_filters(filters):
+    if isinstance(filters, str):
+        parts = re.split(r"[\s,;，；]+", filters.strip())
+    elif isinstance(filters, (list, tuple, set)):
+        parts = []
+        for item in filters:
+            parts.extend(re.split(r"[\s,;，；]+", "" if item is None else str(item).strip()))
+    else:
+        parts = []
+
+    normalized = []
+    seen = set()
+    for item in parts:
+        item = str(item or "").strip()
+        if not item:
+            continue
+        if item == "*":
+            item = "*.*"
+        elif item.startswith("."):
+            item = f"*{item}"
+        elif "*" not in item and "." not in item:
+            item = f"*.{item}"
+        if item not in seen:
+            normalized.append(item)
+            seen.add(item)
+    return normalized or list(DEFAULT_FILE_FILTERS)
+
+
+def format_file_filters(filters):
+    return ", ".join(normalize_file_filters(filters))
 
 
 def normalize_mapping_groups(rules):
@@ -41,7 +80,7 @@ def normalize_mapping_groups(rules):
 def coerce_advanced_value(value, data_type):
     data_type = str(data_type or "String").strip()
     text = "" if value is None else str(value).strip()
-    if data_type == "String":
+    if is_text_like_data_type(data_type):
         return text
     if text == "":
         return [] if data_type == "Array" else ""
@@ -84,7 +123,7 @@ def format_advanced_value(value):
 def expand_advanced_sources(value, match_mode, data_type):
     if match_mode == "expression":
         return ["" if value is None else str(value).strip()]
-    if data_type != "String":
+    if not is_text_like_data_type(data_type):
         return expand_mapping_inputs(value)
 
     text = "" if value is None else str(value).strip()
@@ -119,13 +158,16 @@ def coerce_parameter_rows(ui_rows):
             raise ValueError(f"不支持的数据类型: {data_type}")
 
         seen.add(field_name)
-        rows.append({
+        normalized = {
             "fieldName": field_name,
             "dataType": data_type,
             "input": raw_value,
             "value": coerce_advanced_value(raw_value, data_type),
             "rules": rules,
-        })
+        }
+        if data_type == "File":
+            normalized["filters"] = normalize_file_filters(row.get("filters"))
+        rows.append(normalized)
     return rows
 
 
@@ -165,7 +207,7 @@ def build_rule_engine_config(rows):
                     source_expr, match_mode, param["dataType"]
                 )
                 for source_value in source_values:
-                    if param["dataType"] == "String":
+                    if is_text_like_data_type(param["dataType"]):
                         source_key = (field_name, str(source_value))
                     else:
                         source_key = (field_name, str(parse_parameter_literal(source_value)))
@@ -247,6 +289,7 @@ def build_rule_engine_config(rows):
             "value": param["value"],
             "mappingRef": field_name if runtime_rules else "",
             "ruleRefs": rule_refs,
+            **({"filters": normalize_file_filters(param.get("filters"))} if param["dataType"] == "File" else {}),
         })
         if runtime_rules:
             runtime_mappings[field_name] = runtime_rules

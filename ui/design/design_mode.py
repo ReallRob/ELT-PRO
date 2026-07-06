@@ -53,6 +53,7 @@ class DesignModeWidget(
         self.runtime_parameters = {}
         self.parameter_mappings = {}
         self.global_code = ""
+        self.function_spaces = []
         self.crpa_metadata = {}
         self.run_manifest = {}
 

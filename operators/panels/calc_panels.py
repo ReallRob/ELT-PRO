@@ -1,4 +1,4 @@
-"""Operator panels: calc_panels."""
+﻿"""Operator panels: calc_panels."""
 
 from PyQt5.QtGui import QCursor
 from PyQt5.QtWidgets import (
@@ -22,6 +22,14 @@ class RankPanel(BatchMapFlowPanel):
     theme_color = "#2196F3"
     action_name = "排名"
     output_suffix = "排名"
+    RANK_METHOD_OPTIONS = [
+        ("跳号排名", "min"),
+        ("不跳号", "dense"),
+        ("并列取最后名次", "max"),
+        ("平均名次", "average"),
+        ("按原始顺序", "first"),
+    ]
+    SORT_ORDER_OPTIONS = [("升序", True), ("降序", False)]
 
     def build_rule_ui(self):
         card, inner = self._make_card("排名规则")
@@ -33,14 +41,24 @@ class RankPanel(BatchMapFlowPanel):
         btn_add = self._make_add_button("+ 添加排名规则")
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
-        hint = self._make_hint_label("min 中国式排名；dense 密集排名；max、average、first 分别对应不同并列处理方式。")
+        hint = self._make_hint_label(
+            "排序方式：升序时数值小的排前面，降序时数值大的排前面。"
+            "排名名次：跳号排名会保留并列后的名次空缺，不跳号会连续编号。"
+        )
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
         self.clear_dynamic_layout(self.rules_layout)
         self.add_rule_row()
 
-    def add_rule_row(self, col="", method="min", asc=True, rename=""):
+    def _set_rank_method(self, combo, method):
+        method = str(method or "dense").split(" ", 1)[0]
+        for index in range(combo.count()):
+            if combo.itemData(index) == method or combo.itemText(index).startswith(method):
+                combo.setCurrentIndex(index)
+                return
+
+    def add_rule_row(self, col="", method="dense", asc=False, rename=""):
         container = QWidget()
         container.setStyleSheet(
             "background-color: #F8F9FA; border: 1px solid #E0E0E0; border-radius: 4px;"
@@ -48,34 +66,48 @@ class RankPanel(BatchMapFlowPanel):
         v_layout = QVBoxLayout(container)
         v_layout.setContentsMargins(5, 5, 5, 5)
         v_layout.setSpacing(4)
+
         h1 = QHBoxLayout()
         h1.setContentsMargins(0, 0, 0, 0)
-        col_combo = self._make_col_combo("排序列")
+        h1.setSpacing(6)
+        col_combo = self._make_col_combo("选择列")
         col_combo.setObjectName("col")
         self._set_col_name(col_combo, str(col))
         r_input = QLineEdit(str(rename))
         r_input.setObjectName("rename")
-        r_input.setPlaceholderText("新列名 (必填)")
+        r_input.setPlaceholderText("输入名称")
+        col_combo.setSizePolicy(r_input.sizePolicy())
         btn_rm = self._make_delete_button()
         btn_rm.clicked.connect(lambda checked=False, r=container: self.remove_dynamic_row(r))
-        h1.addWidget(col_combo)
-        h1.addWidget(QLabel("->"))
-        h1.addWidget(r_input)
+        h1.addWidget(col_combo, 1)
+        h1.addWidget(r_input, 1)
         h1.addWidget(btn_rm)
+
         h2 = QHBoxLayout()
         h2.setContentsMargins(0, 0, 0, 0)
-        m_combo = QComboBox()
-        m_combo.setObjectName("method")
-        m_combo.addItems(["min", "dense", "max", "average", "first"])
-        self._set_combo_by_prefix(m_combo, method.split(" ")[0])
+        h2.setSpacing(6)
+        h2.addWidget(QLabel("排序方式"))
         asc_combo = QComboBox()
         asc_combo.setObjectName("asc")
-        asc_combo.addItems(["升序", "降序"])
+        for label, is_ascending in self.SORT_ORDER_OPTIONS:
+            asc_combo.addItem(label, is_ascending)
         asc_combo.setCurrentIndex(0 if asc else 1)
-        h2.addWidget(m_combo)
-        h2.addWidget(asc_combo)
+        h2.addWidget(asc_combo, 1)
+
+        h3 = QHBoxLayout()
+        h3.setContentsMargins(0, 0, 0, 0)
+        h3.setSpacing(6)
+        h3.addWidget(QLabel("排名名次"))
+        m_combo = QComboBox()
+        m_combo.setObjectName("method")
+        for label, code in self.RANK_METHOD_OPTIONS:
+            m_combo.addItem(label, code)
+        self._set_rank_method(m_combo, method)
+        h3.addWidget(m_combo, 1)
+
         v_layout.addLayout(h1)
         v_layout.addLayout(h2)
+        v_layout.addLayout(h3)
         self.rules_layout.addWidget(container)
 
     def set_custom_params(self, p):
@@ -85,8 +117,8 @@ class RankPanel(BatchMapFlowPanel):
                 rules.append(
                     {
                         "col": c,
-                        "method": "min",
-                        "ascending": p.get("ascending", True),
+                        "method": "dense",
+                        "ascending": p.get("ascending", False),
                         "rename": "",
                     }
                 )
@@ -95,8 +127,8 @@ class RankPanel(BatchMapFlowPanel):
             for r in rules:
                 self.add_rule_row(
                     r.get("col"),
-                    r.get("method", "min"),
-                    r.get("ascending", True),
+                    r.get("method", "dense"),
+                    r.get("ascending", False),
                     r.get("rename", ""),
                 )
 
@@ -108,14 +140,13 @@ class RankPanel(BatchMapFlowPanel):
                 col_combo = w.findChild(QComboBox, "col")
                 c = self._get_col_name(col_combo) if col_combo else ""
                 r = w.findChild(QLineEdit, "rename").text().strip()
-                m, asc = (
-                    w.findChild(QComboBox, "method").currentText(),
-                    w.findChild(QComboBox, "asc").currentIndex() == 0,
-                )
+                method_combo = w.findChild(QComboBox, "method")
+                asc_combo = w.findChild(QComboBox, "asc")
+                m = method_combo.currentData() or method_combo.currentText()
+                asc = bool(asc_combo.currentData())
                 if c:
                     rules.append({"col": c, "method": m, "ascending": asc, "rename": r})
         return {"rules": rules}
-
 class CalcPanel(BatchMapFlowPanel):
     use_type = False
     theme_color = "#00BCD4"
@@ -133,7 +164,7 @@ class CalcPanel(BatchMapFlowPanel):
         btn_add.clicked.connect(lambda: self.add_rule_row())
         inner.addWidget(btn_add)
 
-        hint = self._make_hint_label("公式模式用 [列名]；代码模式中 df 为当前表，pd/np/re/math 已可用。")
+        hint = self._make_hint_label("公式模式使用 [列名]；代码模式中 df 为当前表，pd/np/re/math 可直接使用。")
         inner.addWidget(hint)
 
     def clear_custom_ui(self):
@@ -157,7 +188,7 @@ class CalcPanel(BatchMapFlowPanel):
         option_row.setSpacing(6)
         n_input = QLineEdit(str(new_col))
         n_input.setObjectName("new_col")
-        n_input.setPlaceholderText("输出列(代码模式可选)")
+        n_input.setPlaceholderText("输出列名，代码模式可选")
         n_input.textChanged.connect(lambda: self._update_calc_summary(row, header_btn))
         mode_combo = QComboBox()
         mode_combo.setObjectName("mode")
@@ -173,7 +204,7 @@ class CalcPanel(BatchMapFlowPanel):
         timeout_input.setText(str(timeout_seconds or 10))
         f_input = ParameterTextEdit(str(formula))
         f_input.setObjectName("formula")
-        f_input.setPlaceholderText("表达式 (如: [销售额]*0.1)")
+        f_input.setPlaceholderText("表达式，例如 [销售额] * 0.1")
         f_input.setMinimumHeight(72)
         f_input.textChanged.connect(lambda: self._update_calc_summary(row, header_btn))
         c_input = ParameterTextEdit(str(code or ""))
@@ -202,7 +233,7 @@ class CalcPanel(BatchMapFlowPanel):
 
         btn_rm = self._make_delete_button()
         btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
-        name_row.addWidget(self._inline_label("列"))
+        name_row.addWidget(self._inline_label("列名"))
         name_row.addWidget(n_input, stretch=1)
         name_row.addWidget(btn_rm)
         layout.addLayout(name_row)
@@ -223,15 +254,15 @@ class CalcPanel(BatchMapFlowPanel):
         expr = str(formula or "").strip()
         if name and expr:
             prefix = "代码" if mode == "code" else "公式"
-            return f"{name} · {prefix} · {expr[:24]}"
+            return f"{name} | {prefix} | {expr[:24]}"
         if expr and mode == "code":
-            return f"代码 · {expr[:28]}"
+            return f"代码 | {expr[:28]}"
         return name or "新公式列"
 
     def _default_code_placeholder(self, new_col=""):
         col = str(new_col or "结果").strip() or "结果"
         return (
-            "df 为当前表，pd/np/re/math 已可用\n"
+            "df 为当前表，pd/np/re/math 可直接使用\n"
             "params['参数名'] 取参数，param('参数名', '映射名') 取映射值\n"
             "示例：\n"
             "end = pd.to_datetime(df['结束日期'])\n"
@@ -280,7 +311,6 @@ class CalcPanel(BatchMapFlowPanel):
             action.triggered.connect(
                 lambda checked, c=display_col, fi=target_input, m=mode: self._insert_col_at_cursor(fi, c, m)
             )
-        # show near the button
         menu.exec_(QCursor.pos())
 
     def _insert_col_at_cursor(self, line_edit, col_name, mode="formula"):
@@ -381,32 +411,33 @@ class CalcPanel(BatchMapFlowPanel):
                         rules.append({"new_col_name": n, "formula": f, "mode": "formula"})
         return {"rules": rules}
 
+
 class CumsumPanel(BatchMapFlowPanel):
     theme_color = "#00897B"
-    action_name = "累加"
-    output_suffix = "累加"
+    action_name = "累计"
+    output_suffix = "累计"
 
     def build_rule_ui(self):
-        card, inner = self._make_card("累加配置")
+        card, inner = self._make_card("累计配置")
         self.custom_layout.addWidget(card)
 
-        inner.addWidget(QLabel("累加列 (从第一行开始逐行累计):"))
+        inner.addWidget(QLabel("累计列（从第一行开始逐行累计）："))
         self.col_layout = QVBoxLayout()
         self.col_layout.setSpacing(4)
         inner.addLayout(self.col_layout)
         self.add_col_row()
-        btn_add = self._make_add_button("+ 添加累加列")
+        btn_add = self._make_add_button("+ 添加累计列")
         btn_add.clicked.connect(lambda: self.add_col_row())
         inner.addWidget(btn_add)
 
-        hint = self._make_hint_label("累加计算逐行累计。新列名默认为原列名_累加。")
+        hint = self._make_hint_label("累计计算会逐行累加，新列名默认使用 原列名_累计。")
         inner.addWidget(hint)
 
     def add_col_row(self, col=""):
         row = QWidget()
         l = QHBoxLayout(row)
         l.setContentsMargins(0, 0, 0, 0)
-        col_combo = self._make_col_combo("累加列", dtype_filter="numeric")
+        col_combo = self._make_col_combo("累计列", dtype_filter="numeric")
         self._set_col_name(col_combo, str(col))
         btn_rm = self._make_delete_button()
         btn_rm.clicked.connect(lambda checked=False, r=row: self.remove_dynamic_row(r))
@@ -436,6 +467,7 @@ class CumsumPanel(BatchMapFlowPanel):
             for c in p["col_list"]:
                 self.add_col_row(c)
 
+
 class PctChangePanel(BatchMapFlowPanel):
     theme_color = "#F4511E"
     action_name = "环比"
@@ -445,7 +477,7 @@ class PctChangePanel(BatchMapFlowPanel):
         card, inner = self._make_card("环比配置")
         self.custom_layout.addWidget(card)
 
-        inner.addWidget(QLabel("环比列 (对指定列计算变化率):"))
+        inner.addWidget(QLabel("环比列（对指定列计算变化率）："))
         self.col_layout = QVBoxLayout()
         self.col_layout.setSpacing(4)
         inner.addLayout(self.col_layout)
@@ -461,7 +493,7 @@ class PctChangePanel(BatchMapFlowPanel):
         fl.addRow("间隔期数:", self.periods_input)
         inner.addLayout(fl)
 
-        hint = self._make_hint_label("环比 = (当前值 - 上期值) / 上期值。间隔期数 1 为逐行对比，12 常用于月度同比。")
+        hint = self._make_hint_label("环比 = (当前值 - 上期值) / 上期值。间隔期数 1 表示逐行对比，2 常用于月度同比。")
         inner.addWidget(hint)
 
     def add_col_row(self, col=""):

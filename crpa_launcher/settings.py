@@ -3,21 +3,33 @@
 import json
 from pathlib import Path
 
-from core.app_paths import get_workspace_config_path
+from core.app_paths import get_crpa_launcher_config_path, get_workspace_config_path
 
 
 SECTION_KEY = "crpa_launcher"
-CONFIG_PATH = get_workspace_config_path()
+CONFIG_PATH = get_crpa_launcher_config_path()
+LEGACY_CONFIG_PATH = get_workspace_config_path()
 
 
-def load_workspace_config():
-    if not CONFIG_PATH.exists():
+def _read_json(path):
+    if not path.exists():
         return {}
     try:
-        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
+
+
+def _load_legacy_config():
+    state = _read_json(LEGACY_CONFIG_PATH).get(SECTION_KEY, {})
+    return {SECTION_KEY: state} if isinstance(state, dict) else {}
+
+
+def load_workspace_config():
+    if CONFIG_PATH.exists():
+        return _read_json(CONFIG_PATH)
+    return _load_legacy_config()
 
 
 def save_workspace_config(data):

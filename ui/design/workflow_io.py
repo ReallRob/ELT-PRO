@@ -84,6 +84,7 @@ def restore_runtime_metadata(widget, workflow):
     widget.runtime_parameters = workflow.get("runtime_parameters", {})
     widget.parameter_mappings = workflow.get("parameter_mappings", {})
     widget.global_code = str(workflow.get("global_code") or "")
+    widget.function_spaces = workflow.get("function_spaces") or []
     widget.crpa_metadata = workflow.get("crpa", {})
     widget.run_manifest = workflow.get("run_manifest", {})
 
