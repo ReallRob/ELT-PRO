@@ -11,3 +11,7 @@ venv/
 
 *.log
 *.tmp
+
+# Local workflow/config/data files should not be committed.
+*.json
+*.xlsx
