@@ -4,7 +4,9 @@
 
 - 记录日期: 2026-07-08
 - 目标分支: codex
-- 当前状态: 未上传
+- 当前状态: 已上传
+- 上传分支: origin/codex
+- 已上传提交: 91ca7f0 Improve async workflow runtime and template preview
 - 标记规则: 只有确认本地最新代码已经成功 push 到 GitHub 后，才把当前状态改为“已上传”，并补充提交信息。
 
 ## 本次更新摘要
