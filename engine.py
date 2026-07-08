@@ -7,9 +7,11 @@ from core.workflow.operator_model import OperatorInput
 from core.workflow.operators import create_operator
 from core.workflow.runtime_store import WorkflowRuntimeStore
 from parameter_resolver import clone_resolved_runtime_value, normalize_runtime_parameters
-from template_engine import close_workbook, workbook_to_preview_data
+from template_engine import close_workbook, clone_workbook, workbook_to_preview_data
 
 PARAMETER_ACTIONS = {"advanced_param_mapping"}
+LEGACY_TEMPLATE_PREVIEW_MAX_ROWS = "5000"
+LEGACY_TEMPLATE_PREVIEW_MAX_COLS = "200"
 
 
 class WorkflowEngine(QThread):
@@ -24,6 +26,8 @@ class WorkflowEngine(QThread):
         keep_intermediates=False,
         profile_mode=None,
         template_preview_max_sheets=None,
+        initial_runtime_data=None,
+        return_raw_outputs=False,
     ):
         super().__init__()
         self.file_mapping = file_mapping or {}
@@ -34,9 +38,11 @@ class WorkflowEngine(QThread):
             profile_mode = bool(
                 self.workflow_config.get("profile_mode")
                 or self.workflow_config.get("profile")
-            )
+        )
         self.profile_mode = bool(profile_mode)
-        self.template_preview_max_sheets = template_preview_max_sheets
+        self.initial_runtime_data = dict(initial_runtime_data or {})
+        self.return_raw_outputs = bool(return_raw_outputs)
+        self._seeded_runtime_value_ids = set()
         self._dedup_map = {}
         self._output_key_map = {}
         self._output_meta = {}
@@ -190,17 +196,78 @@ class WorkflowEngine(QThread):
         params["function_spaces"] = self.function_spaces
         return params
 
-    def _to_display_value(self, value):
+    def _preview_limit_from_params(self, params, key, legacy_default=None):
+        raw = (params or {}).get(key)
+        text = str(raw or "").strip()
+        if not text or (legacy_default is not None and text == str(legacy_default)):
+            return None
+        try:
+            value = int(text)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+
+    def _to_display_value(self, value, params=None):
         if not (isinstance(value, dict) and value.get("_wb") is not None):
             return value
+        params = params or {}
+        saved_path = value.get("_saved_path", "")
+        preview_kwargs = {
+            "start_row": params.get("preview_start_row") or 1,
+            "start_col": params.get("preview_start_col") or 1,
+        }
+        max_rows = self._preview_limit_from_params(
+            params, "preview_max_rows", LEGACY_TEMPLATE_PREVIEW_MAX_ROWS
+        )
+        max_cols = self._preview_limit_from_params(
+            params, "preview_max_cols", LEGACY_TEMPLATE_PREVIEW_MAX_COLS
+        )
+        if max_rows is not None:
+            preview_kwargs["max_rows"] = max_rows
+        if max_cols is not None:
+            preview_kwargs["max_cols"] = max_cols
         return workbook_to_preview_data(
             value.get("_wb"),
-            value.get("_saved_path", ""),
-            max_sheets=self.template_preview_max_sheets,
+            saved_path,
+            max_sheets=None,
+            **preview_kwargs,
         )
 
+    def _runtime_value_identity(self, value):
+        if isinstance(value, dict) and value.get("_wb") is not None:
+            return id(value.get("_wb"))
+        return id(value)
+
+    def _clone_seed_value(self, value):
+        if isinstance(value, dict) and value.get("_wb") is not None:
+            cloned = dict(value)
+            cloned["_wb"] = clone_workbook(value.get("_wb"))
+            return cloned
+        return value
+
+    def _seed_runtime_store(self):
+        for raw_key, value in self.initial_runtime_data.items():
+            if not isinstance(raw_key, tuple) or len(raw_key) != 2:
+                continue
+            node_id, output_id = raw_key
+            key = (str(node_id or ""), str(output_id or "out_1"))
+            if not key[0]:
+                continue
+            seeded_value = self._clone_seed_value(value)
+            self.runtime_store.data_pool[key] = seeded_value
+            self._seeded_runtime_value_ids.add(self._runtime_value_identity(seeded_value))
+        if self.initial_runtime_data:
+            self.log(f"    - [cache] 复用上游缓存 {len(self.initial_runtime_data)} 个输出")
+
     def _close_workbooks(self):
+        self._close_workbooks_for_result(keep_returned_raw=False)
+
+    def _close_workbooks_for_result(self, keep_returned_raw=False):
+        if keep_returned_raw:
+            return
         for value in list(self.runtime_store.iter_all_data()):
+            if self._runtime_value_identity(value) in self._seeded_runtime_value_ids:
+                continue
             if isinstance(value, dict):
                 close_workbook(value.get("_wb"))
 
@@ -218,7 +285,7 @@ class WorkflowEngine(QThread):
             return False
         return True
 
-    def _publish_outputs_if_needed(self, action, node_id, display_pool, dedup_counters, ref_count):
+    def _publish_outputs_if_needed(self, action, node_id, display_pool, dedup_counters, ref_count, params=None):
         published_count = 0
         for output in self.runtime_store.outputs_for_node(node_id):
             if ref_count.get((node_id, output.output_id), 0) != 0 and not self.keep_intermediates:
@@ -227,7 +294,8 @@ class WorkflowEngine(QThread):
                 continue
             key = self._unique_key(output.name, display_pool, dedup_counters)
             value = self._to_display_value(
-                self.runtime_store.get_data(node_id, output.output_id)
+                self.runtime_store.get_data(node_id, output.output_id),
+                params,
             )
             display_pool[key] = value
             self._dedup_map.setdefault(node_id, key)
@@ -296,6 +364,7 @@ class WorkflowEngine(QThread):
             self.function_spaces = list(self.workflow_config.get("function_spaces") or [])
 
             self.runtime_store.reset()
+            self._seed_runtime_store()
             display_pool = {}
             dedup_counters = {}
             self._dedup_map = {}
@@ -306,12 +375,11 @@ class WorkflowEngine(QThread):
             self.log(f"开始执行工作流: {workflow_name} (共 {total_steps} 步)")
             self.log(
                 f"    - [perf] keep_intermediates={self.keep_intermediates}, "
-                f"profile_mode={self.profile_mode}, "
-                f"template_preview_max_sheets={self.template_preview_max_sheets}"
+                f"profile_mode={self.profile_mode}"
             )
 
+            self.progress_signal.emit(0, total_steps)
             for i, step in enumerate(steps):
-                self.progress_signal.emit(i + 1, total_steps)
                 step_id = step.get("step_id", i + 1)
                 node_id = step.get("node_id")
                 action = step.get("action")
@@ -331,6 +399,7 @@ class WorkflowEngine(QThread):
                             0,
                             0,
                         )
+                        self.progress_signal.emit(i + 1, total_steps)
                         continue
 
                     run_started = time.perf_counter()
@@ -355,7 +424,7 @@ class WorkflowEngine(QThread):
 
                     publish_started = time.perf_counter()
                     published_count = self._publish_outputs_if_needed(
-                        action, node_id, display_pool, dedup_counters, ref_count
+                        action, node_id, display_pool, dedup_counters, ref_count, params
                     )
                     publish_elapsed = time.perf_counter() - publish_started
 
@@ -376,6 +445,7 @@ class WorkflowEngine(QThread):
                         published_count,
                         released_count,
                     )
+                    self.progress_signal.emit(i + 1, total_steps)
 
                 except Exception as step_e:
                     err_msg = traceback.format_exc()
@@ -389,17 +459,28 @@ class WorkflowEngine(QThread):
             total_elapsed = time.perf_counter() - started_at
             self.log(f"\n成功，所有节点执行完毕。总耗时: {self._format_ms(total_elapsed)}")
             self.log(f"    - [perf] final display_pool outputs={len(display_pool)}")
-            self._close_workbooks()
-            self.finished_signal.emit(
-                True,
-                {
-                    "data": display_pool,
-                    "dedup_map": self._dedup_map,
-                    "output_key_map": self._output_key_map,
-                    "output_meta": self._output_meta,
-                    "state": self.runtime_state,
-                },
-            )
+            result_payload = {
+                "data": display_pool,
+                "dedup_map": self._dedup_map,
+                "output_key_map": self._output_key_map,
+                "output_meta": self._output_meta,
+                "state": self.runtime_state,
+            }
+            if self.return_raw_outputs:
+                result_payload["raw_data"] = dict(self.runtime_store.data_pool)
+                result_payload["raw_output_meta"] = {
+                    node_id: [
+                        {
+                            "output_id": output.output_id,
+                            "name": output.name,
+                            "data_type": output.data_type,
+                        }
+                        for output in outputs
+                    ]
+                    for node_id, outputs in self.runtime_store.output_meta.items()
+                }
+            self._close_workbooks_for_result(keep_returned_raw=self.return_raw_outputs)
+            self.finished_signal.emit(True, result_payload)
 
         except Exception:
             err_msg = traceback.format_exc()

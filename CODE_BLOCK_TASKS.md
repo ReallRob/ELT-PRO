@@ -8,12 +8,13 @@
 - 代码块输入彼此同级，不再区分主表、连接表或当前表。
 - 代码块可以接入多个 DataFrame，也可以接入模板 Workbook。
 - 代码块可以只处理 DataFrame 并输出 DataFrame。
-- 代码块可以处理 Workbook，并原地修改同一个模板主线 Workbook。
-- 代码块支持当前代码和函数库两个编辑页。
+- 代码块可以处理 Workbook；包含 Workbook 输入时会直接使用内存对象执行，避免大模板跨进程保存/加载。
+- 代码块支持当前代码、函数库和说明三个标签页。
 - 函数库由多个函数空间组成，每个空间有独立名称、命名空间、启用状态和代码。
 - 函数空间供所有代码块复用，函数内部可以 return。
 - 当前代码块可以直接写脚本；需要输出给下游时，可以直接 return，也可以赋值 result 或 df/wb。
 - 返回结果推荐使用字典形式，以便明确输出名称和多输出。
+- 代码块执行时会实时捕获 `print()` / stderr，并同步到运行日志、CRPA JSON 运行器和代码编辑窗口日志区。
 
 ## 输入模型
 
@@ -36,9 +37,9 @@
   - 第二个 Workbook：`wb1`
   - 第三个 Workbook：`wb2`
 - 所有 Workbook 输入也会放入 `wbs` 字典。
-- Workbook 走模板主线引用，代码块修改 `wb` 会影响同一个内存 Workbook，后续保存模板节点可以保存修改后的结果。
-- 如果配置了 Sheet 和工作表变量名，会额外生成 Worksheet 变量，例如 `ws`。
-- 所有 Worksheet 变量也会放入 `wss` 字典。
+- Workbook 输入走内存执行路径，不再为了跨进程传递而保存临时 xlsx、再重新 `load_workbook()`。
+- 当存在 Workbook 输入且当前代码没有显式 `return` / `result` 时，默认输出第一个内存 Workbook 的修改结果。
+- 不再在输入配置区生成 `ws` 变量；需要工作表时，在代码中写 `ws = wb.active` 或 `ws = wb["Sheet名"]`。
 
 ### 无输入代码块
 
@@ -75,7 +76,7 @@ return {
 1. 如果当前代码局部变量里存在 `result`，使用 `result`。
 2. 否则如果存在 Workbook 输入，默认输出第一个 Workbook。
 3. 否则如果存在 DataFrame 输入，默认输出第一个 DataFrame。
-4. 如果都没有，报错。
+4. 如果都没有，返回 0 个输出，运行仍可成功。
 
 ## 函数库模型
 
@@ -131,7 +132,7 @@ from copy import copy, deepcopy
 from openpyxl.utils import get_column_letter
 ```
 
-高级变量单独放在折叠或低优先级说明里：`params`、`mappings`、`param()`、`state`、`dfs`、`wbs`、`wss`。
+高级变量单独放在折叠或低优先级说明里：`params`、`mappings`、`param()`、`state`、`dfs`、`wbs`。
 
 ### import 策略
 
@@ -152,6 +153,18 @@ from openpyxl.utils import get_column_letter
 
 - 不允许导入未授权模块。
 
+## 执行与日志模型
+
+- 代码块使用 `auto` 执行策略：无 Workbook 上游输入时走独立子进程；包含 Workbook 上游输入时走内存执行。
+- 只要存在上游 Workbook，即使旧 JSON 手动写了 `execution_mode: process`，也会强制改为内存执行，禁止临时 xlsx 保存/加载往返。
+- DataFrame/普通代码块由父进程轮询执行结果、实时日志和超时状态；超时后会终止独立执行进程。
+- Workbook/模板代码块不跨进程传递 Workbook，可避免大模板临时 xlsx 保存/加载成本；内存模式已注入 `should_cancel()` / `check_cancel()`，并对纯 Python 代码启用行级超时检查。
+- 内存模式无法安全强杀阻塞型系统调用、长 `time.sleep()` 或部分 C 扩展调用；这类代码应主动拆分循环并调用 `check_cancel()`。
+- 如果代码块没有上游 Workbook，而是在代码内部自行 `openpyxl.load_workbook()` 并返回 Workbook，默认仍属于普通子进程执行；这样可以保留死循环强杀能力，但返回 Workbook 会经过子进程序列化。后续如需优化，可增加显式高级执行模式。
+- 设计态单节点运行会在代码块超时时先标记后台任务废弃并恢复 UI；如果旧线程仍在收尾，会暂时禁止继续启动新的运行任务。
+- `print()` 和 stderr 会按行捕获并输出为 `代码块输出:` / `代码块错误输出:` 日志。
+- CRPA JSON 运行器和正式执行页会显示完整引擎日志；代码编辑窗口内的日志区只展示用户代码输出，避免被引擎步骤日志淹没。
+
 ### PyInstaller 注意事项
 
 - 代码块运行不要求用户本机单独安装 Python，前提是程序用 PyInstaller 打包时已经把 Python 运行时和依赖库打进去。
@@ -163,7 +176,7 @@ from openpyxl.utils import get_column_letter
 ### 已完成
 
 - 代码编辑窗口改为非模态窗口，打开后可以点击其它地方。
-- 编辑窗口升级为两个主页面：
+- 编辑窗口升级为三个标签页：
   - 当前代码
   - 函数库
   - 说明
@@ -172,6 +185,7 @@ from openpyxl.utils import get_column_letter
 - 说明页按“当前输入、输出写法、已预置库、支持 import”分组展示。
 - 说明页支持复制片段，可插入常用 import 和输出写法。
 - 编辑窗口运行失败时显示短错误摘要，并可展开/复制完整错误详情。
+- 编辑窗口运行时增加日志区，实时显示 `print()` / stderr 输出。
 - 支持换行自动缩进。
 - 支持 Tab 缩进和 Shift+Tab 反缩进。
 - 支持缩进区块退格。
@@ -206,6 +220,7 @@ from openpyxl.utils import get_column_letter
 - [x] 当前代码页恢复为全宽编辑区，说明不再挤占代码编辑空间。
 - [x] 说明页支持复制片段，可插入已预置库和输出写法；支持 import 只显示根模块清单。
 - [x] 代码编辑窗口运行失败时显示短错误摘要，可展开和复制完整错误详情。
+- [x] 代码编辑窗口运行时实时显示 `print()` / stderr 输出。
 - [x] 多输出运行后在代码块面板展示输出列表，支持修改输出显示名称。
 - [x] 代码编辑框支持基础自动缩进。
 - [x] 代码编辑框支持运行按钮。
@@ -213,7 +228,7 @@ from openpyxl.utils import get_column_letter
 - [x] 代码块支持无输入运行。
 - [x] 代码块支持多个 DataFrame 输入。
 - [x] 代码块支持 Workbook 输入。
-- [x] 代码块支持 Worksheet alias。
+- [x] 代码块输入配置区已移除 Worksheet alias；工作表对象由用户在代码内通过 Workbook 获取。
 - [x] 代码块支持返回 DataFrame、Workbook、Worksheet。
 - [x] 代码块支持字典多输出。
 - [x] 代码块支持受限 import。
@@ -223,13 +238,19 @@ from openpyxl.utils import get_column_letter
 - [x] 完善代码编辑窗口内的测试运行反馈。
 - [x] 多输出结果运行后同步更新 `outputs` 和 `io_prefs.outputs`，使画布和预览能识别新增输出。
 - [x] 明确 Workbook 输入时没有 return 会默认输出 Workbook。
+- [x] 代码块 stdout/stderr 通过引擎日志实时输出，CRPA JSON 运行器、正式执行页和代码编辑窗口均可见。
+- [x] DataFrame/普通代码块在独立子进程中支持超时终止，避免用户死循环卡住主程序。
+- [x] Workbook/模板代码块改为内存执行，不再跨进程保存临时 xlsx 后重新加载。
+- [x] Workbook 上游输入强制内存执行，旧 JSON 手写 `execution_mode: process` 也不会回退到临时 xlsx 跨进程路径。
+- [x] Workbook/模板内存执行模式注入 `should_cancel()` / `check_cancel()`，并支持纯 Python 行级超时。
+- [x] `should_cancel` / `check_cancel` 已设为保留变量名，避免输入别名覆盖取消函数。
 - [x] 增加返回普通类型时的友好错误提示，并说明全局函数内部返回普通值不受影响。
 
 ## 待完善任务
 
 ### 高优先级
 
-- [ ] 增加运行结果提示的异步化，避免特别耗时的同步单节点运行期间窗口短暂无响应。
+- [x] 将设计态单节点运行彻底异步化；当前单节点运行已改为后台 `WorkflowEngine.start()`。
 
 ### 中优先级
 
@@ -237,6 +258,7 @@ from openpyxl.utils import get_column_letter
 - [ ] 增加自动补全能力，至少覆盖当前变量、函数空间、常用 pandas/openpyxl 对象。
 - [ ] 增加代码语法高亮。
 - [ ] 增加代码块运行前的数据规模提示，尤其是大 DataFrame 跨进程执行成本。
+- [x] 增加 Workbook 内存执行模式的风险提示和设计态后台运行保护，尤其是用户代码死循环场景。
 - [ ] 增加函数库保存和同步的明确状态提示。
 - [ ] 为无输入代码块增加模板示例，例如从空 DataFrame 或新 Workbook 开始生成结果。
 
@@ -251,7 +273,8 @@ from openpyxl.utils import get_column_letter
 ## 设计风险
 
 - DataFrame 输入复制能保护上游数据，但大表会增加内存和耗时。
-- Workbook 输入是引用传递，适合模板主线，但代码块内部修改会影响后续节点。
+- Workbook 上游输入走内存执行，性能更适合模板主线；纯 Python 长循环可被行级超时打断，阻塞型 IO/长 sleep 仍无法被线程安全强杀。
+- 代码内部自行 `load_workbook()` 的无上游场景仍默认走子进程；这是为了保留超时强杀能力，代价是返回 Workbook 时仍需要跨进程序列化。
 - 允许 import 会增加打包和安全边界复杂度，必须维持白名单。
 - 函数库越强大，越需要清晰的保存、同步、命名空间和版本提示。
 - 函数空间之间如果互相调用，需要保持加载顺序可解释；当前按函数空间列表顺序加载。
@@ -259,9 +282,8 @@ from openpyxl.utils import get_column_letter
 
 ## 建议后续改造顺序
 
-1. 先补齐运行反馈：点击运行、节点运行、失败信息和输出数量。
-2. 再完善多输出配置同步，确保 `return {"A": df, "B": wb}` 后 UI 能识别两个输出。
-3. 再把全局函数升级为函数空间管理，并把说明内容拆成独立说明页。
-4. 再做代码格式化、语法高亮和自动补全。
-5. 然后做大数据运行提示、异步运行和性能保护。
-6. 最后考虑项目级函数库、函数版本记录和更强的安全沙箱。
+1. 补充大数据、大 Workbook 的运行前规模提示。
+2. 完善代码示例、格式化、自动补全和语法高亮。
+3. 完善函数库保存状态、项目级函数库和函数版本记录。
+4. 评估无上游代码块自行 `load_workbook()` 后返回 Workbook 的高级内存执行模式。
+5. 最后补齐代码块单元测试模板、更完整的安全沙箱和审计能力。

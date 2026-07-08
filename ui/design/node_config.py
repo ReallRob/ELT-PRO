@@ -7,9 +7,8 @@ try:
 except ImportError:  # pragma: no cover - depends on PyQt packaging
     sip = None
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
-    QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -20,8 +19,37 @@ from PyQt5.QtWidgets import (
 
 from node_editor import NodeItem
 from core.workflow.schema import operation_display_name, normalize_action_params, normalize_output_refs
+from core.workflow.timeouts import workflow_code_timeout_ms
 from parameter_resolver import normalize_runtime_parameters
+from engine import WorkflowEngine
 from ui.design.settings_dialog import SettingsDialog
+
+
+RUNTIME_NEUTRAL_PARAM_KEYS = {"operation_name", "outputs"}
+RUNTIME_NEUTRAL_IO_PREF_KEYS = {
+    "display_name",
+    "output_data_type",
+    "output_id",
+    "output_name",
+    "outputs",
+}
+
+
+def _runtime_effective_params(params):
+    """Keep only fields whose changes require rerunning node data."""
+    cleaned = copy.deepcopy(params or {})
+    for key in RUNTIME_NEUTRAL_PARAM_KEYS:
+        cleaned.pop(key, None)
+    prefs = cleaned.get("io_prefs")
+    if isinstance(prefs, dict):
+        prefs = copy.deepcopy(prefs)
+        for key in RUNTIME_NEUTRAL_IO_PREF_KEYS:
+            prefs.pop(key, None)
+        if prefs:
+            cleaned["io_prefs"] = prefs
+        else:
+            cleaned.pop("io_prefs", None)
+    return cleaned
 
 
 class PublishSettingsDialog(QDialog):
@@ -116,6 +144,8 @@ class NodeConfigMixin:
         if mark_dirty:
             node.is_dirty = True
         node.update()
+        if mark_dirty and hasattr(self, "status_label"):
+            self.status_label.setText("配置已变更，运行结果暂保留；重新运行后下游连线会提示待更新")
 
     def _find_node_by_id(self, node_id):
         target = str(node_id or "")
@@ -208,6 +238,12 @@ class NodeConfigMixin:
 
     def _on_edge_changed(self):
         """连线变更时刷新当前配置面板的输入列表和列下拉。"""
+        affected = [
+            item
+            for item in self.canvas_scene.items()
+            if isinstance(item, NodeItem) and getattr(item, "edges_in", None)
+        ]
+        self._mark_input_edges_stale_for_nodes(affected)
         node = self._current_live_node()
         if node is None or "action" not in node.params:
             return
@@ -254,8 +290,8 @@ class NodeConfigMixin:
         if active_panel and hasattr(active_panel, "get_params"):
             new_params = active_panel.get_params()
             normalized = self._normalize_params_for_node(node, new_params, include_action=True)
-            changed = normalized != node.params
-            self._store_node_params(node, action, new_params, mark_dirty=changed)
+            runtime_changed = _runtime_effective_params(normalized) != _runtime_effective_params(node.params)
+            self._store_node_params(node, action, new_params, mark_dirty=runtime_changed)
 
     def on_tool_saved(self, action, params):
         node = self._current_live_node()
@@ -269,6 +305,8 @@ class NodeConfigMixin:
             self.status_label.setText("配置已应用，节点待运行")
 
     def _ancestor_nodes_for(self, node):
+        if node is None:
+            return []
         seen = set()
         ordered = []
 
@@ -283,12 +321,181 @@ class NodeConfigMixin:
         visit(node)
         return ordered
 
+    def _downstream_nodes_for(self, nodes, exclude_node_ids=None):
+        exclude = {str(node_id) for node_id in (exclude_node_ids or []) if str(node_id or "")}
+        seen = set()
+        downstream = []
+        stack = []
+        for node in nodes or []:
+            stack.extend(edge.dest_node for edge in getattr(node, "edges_out", []) or [])
+        while stack:
+            current = stack.pop(0)
+            if current is None or self._is_deleted_qt_object(current):
+                continue
+            node_id = str(getattr(current, "node_id", ""))
+            if not node_id or node_id in seen or node_id in exclude:
+                continue
+            seen.add(node_id)
+            downstream.append(current)
+            stack.extend(edge.dest_node for edge in getattr(current, "edges_out", []) or [])
+        return downstream
+
+    def _clear_runtime_outputs_for_nodes(self, nodes, mark_dirty=False):
+        for item in nodes or []:
+            if item is None or self._is_deleted_qt_object(item):
+                continue
+            node_id = str(getattr(item, "node_id", ""))
+            if not node_id:
+                continue
+            for old_key in self.ctx.output_key_map.get(node_id, {}).values():
+                self.ctx.data_pool.pop(old_key, None)
+            self.ctx.output_key_map[node_id] = {}
+            self.ctx.dedup_map.pop(node_id, None)
+            self.ctx.clear_raw_node_outputs(node_id)
+            if mark_dirty:
+                item.is_dirty = True
+                item.update()
+
+    def _node_has_runtime_output(self, node):
+        node_id = str(getattr(node, "node_id", ""))
+        if not node_id:
+            return False
+        if getattr(self.ctx, "output_key_map", {}).get(node_id):
+            return True
+        return any(
+            raw_node_id == node_id
+            for raw_node_id, _output_id in getattr(self.ctx, "raw_data_pool", {})
+        )
+
+    def _clear_input_stale_edges(self, node):
+        for edge in getattr(node, "edges_in", []) or []:
+            if self._is_deleted_qt_object(edge):
+                continue
+            if hasattr(edge, "set_stale"):
+                edge.set_stale(False)
+
+    def _mark_direct_downstream_stale_edges(
+        self,
+        node,
+        reason="上游已重新运行，下游需重新运行",
+        exclude_node_ids=None,
+    ):
+        exclude = {str(node_id) for node_id in (exclude_node_ids or []) if str(node_id or "")}
+        for edge in getattr(node, "edges_out", []) or []:
+            if self._is_deleted_qt_object(edge):
+                continue
+            dest = getattr(edge, "dest_node", None)
+            if dest is None or self._is_deleted_qt_object(dest):
+                continue
+            if str(getattr(dest, "node_id", "")) in exclude:
+                if hasattr(edge, "set_stale"):
+                    edge.set_stale(False)
+                continue
+            if hasattr(edge, "set_stale"):
+                edge.set_stale(True, reason)
+
+    def _mark_input_edges_stale_for_nodes(self, nodes, reason="输入连线已变更，目标节点需重新运行"):
+        for node in nodes or []:
+            if node is None or self._is_deleted_qt_object(node):
+                continue
+            if not self._node_has_runtime_output(node):
+                continue
+            for edge in getattr(node, "edges_in", []) or []:
+                if self._is_deleted_qt_object(edge):
+                    continue
+                if hasattr(edge, "set_stale"):
+                    edge.set_stale(True, reason)
+
+    def _invalidate_node_and_downstream_runtime(self, node):
+        if node is None or self._is_deleted_qt_object(node):
+            return
+        self._mark_direct_downstream_stale_edges(node)
+
+    def _node_has_dirty_ancestor(self, node, seen=None):
+        seen = seen or set()
+        if node is None or node.node_id in seen:
+            return False
+        seen.add(node.node_id)
+        for edge in getattr(node, "edges_in", []) or []:
+            if getattr(edge, "is_stale", False):
+                return True
+            up_node = edge.source_node
+            if up_node is None or self._is_deleted_qt_object(up_node):
+                continue
+            if getattr(up_node, "is_dirty", False):
+                return True
+            if self._node_has_dirty_ancestor(up_node, seen):
+                return True
+        return False
+
+    def _raw_output_refs_for_node(self, node):
+        refs = self._source_output_refs(node)
+        if refs:
+            return refs
+        return [
+            {
+                "output_id": str(item.get("output_id") or "out_1"),
+                "name": str(item.get("name") or ""),
+                "data_type": str(item.get("data_type") or "table"),
+            }
+            for item in self.ctx.raw_node_output_refs(getattr(node, "node_id", ""))
+            if isinstance(item, dict)
+        ]
+
+    def _node_raw_ready(self, node):
+        if node is None or getattr(node, "is_dirty", False):
+            return False
+        if self._node_has_dirty_ancestor(node):
+            return False
+        refs = self._raw_output_refs_for_node(node)
+        return bool(refs) and all(
+            self.ctx.has_raw_output(node.node_id, ref.get("output_id") or "out_1")
+            for ref in refs
+        )
+
+    def _nodes_needed_for_run(self, target_node):
+        seen = set()
+        ordered = []
+
+        def visit(current):
+            if current is None or current.node_id in seen:
+                return
+            if current is not target_node and self._node_raw_ready(current):
+                return
+            for edge in getattr(current, "edges_in", []) or []:
+                visit(edge.source_node)
+            seen.add(current.node_id)
+            ordered.append(current)
+
+        visit(target_node)
+        return ordered
+
+    def _initial_runtime_data_for_config(self, config, run_node_ids):
+        initial_data = {}
+        missing = []
+        for step in (config or {}).get("steps") or []:
+            for item in (step.get("params", {}) or {}).get("inputs", []) or []:
+                if not isinstance(item, dict) or not item.get("enabled", True):
+                    continue
+                source_node_id = str(item.get("source_node_id") or "")
+                source_output_id = str(item.get("source_output_id") or "out_1")
+                if not source_node_id or source_node_id in run_node_ids:
+                    continue
+                key = (source_node_id, source_output_id)
+                if key in self.ctx.raw_data_pool:
+                    initial_data[key] = self.ctx.raw_data_pool[key]
+                else:
+                    missing.append(key)
+        return initial_data, missing
+
     def _merge_engine_result(self, result_pool, nodes):
         node_ids = {node.node_id for node in nodes}
         data = result_pool.get("data", {}) if isinstance(result_pool, dict) else {}
         output_map = result_pool.get("output_key_map", {}) if isinstance(result_pool, dict) else {}
         dedup_map = result_pool.get("dedup_map", {}) if isinstance(result_pool, dict) else {}
         output_meta = result_pool.get("output_meta", {}) if isinstance(result_pool, dict) else {}
+        raw_data = result_pool.get("raw_data", {}) if isinstance(result_pool, dict) else {}
+        raw_output_meta = result_pool.get("raw_output_meta", {}) if isinstance(result_pool, dict) else {}
         updated_outputs = {}
 
         self.ctx.blockSignals(True)
@@ -298,6 +505,7 @@ class NodeConfigMixin:
                     self.ctx.data_pool.pop(old_key, None)
                 self.ctx.output_key_map[node_id] = {}
                 self.ctx.dedup_map.pop(node_id, None)
+                self.ctx.clear_raw_node_outputs(node_id)
 
             for node_id, outputs in output_map.items():
                 if node_id not in node_ids:
@@ -341,9 +549,253 @@ class NodeConfigMixin:
                 panel = getattr(self, "panel_instances", {}).get(item.action_type)
                 if panel and hasattr(panel, "set_runtime_outputs"):
                     panel.set_runtime_outputs(merged)
+            self.ctx.update_raw_outputs(raw_data, raw_output_meta, node_ids)
         finally:
             self.ctx.blockSignals(False)
+        for item in nodes:
+            self._clear_input_stale_edges(item)
+        for item in nodes:
+            self._mark_direct_downstream_stale_edges(item, exclude_node_ids=node_ids)
         return updated_outputs
+
+    def _ensure_single_node_runtime_state(self):
+        if not hasattr(self, "_single_node_generation"):
+            self._single_node_generation = 0
+        if not hasattr(self, "_single_node_engine"):
+            self._single_node_engine = None
+        if not hasattr(self, "_single_node_run"):
+            self._single_node_run = None
+        if not hasattr(self, "_discarded_single_node_engines"):
+            self._discarded_single_node_engines = []
+
+    def _single_node_run_active(self):
+        self._ensure_single_node_runtime_state()
+        engine = self._single_node_engine
+        if engine is None:
+            return False
+        try:
+            return engine.isRunning() or self._single_node_run is not None
+        except RuntimeError:
+            self._single_node_engine = None
+            self._single_node_run = None
+            return False
+
+    def _retain_discarded_single_node_engine(self, engine):
+        if engine is None:
+            return
+        retained = self._discarded_single_node_engines
+        if engine not in retained:
+            retained.append(engine)
+
+    def _forget_discarded_single_node_engine(self, engine):
+        try:
+            self._discarded_single_node_engines.remove(engine)
+        except (AttributeError, ValueError):
+            pass
+
+    def _discarded_single_node_engine_running(self):
+        self._ensure_single_node_runtime_state()
+        running = []
+        for engine in list(self._discarded_single_node_engines):
+            try:
+                if engine.isRunning():
+                    running.append(engine)
+                else:
+                    self._forget_discarded_single_node_engine(engine)
+            except RuntimeError:
+                self._forget_discarded_single_node_engine(engine)
+        return bool(running)
+
+    def _clear_single_node_timer(self, run):
+        if not isinstance(run, dict):
+            return
+        timer = run.pop("timer", None)
+        if timer is None:
+            return
+        try:
+            timer.stop()
+            timer.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _invalidate_single_node_run(self, message="当前运行已被新操作废弃，后台结果将被忽略"):
+        self._ensure_single_node_runtime_state()
+        self._single_node_generation += 1
+        run = self._single_node_run
+        engine = self._single_node_engine
+        if isinstance(run, dict):
+            run["discarded"] = True
+            self._clear_single_node_timer(run)
+            panel = getattr(self, "panel_instances", {}).get(str(run.get("node_action") or ""))
+            if panel and hasattr(panel, "set_code_editor_run_result"):
+                panel.set_code_editor_run_result(str(run.get("node_id") or ""), False, message)
+        if engine is not None:
+            self._retain_discarded_single_node_engine(engine)
+        self._single_node_engine = None
+        self._single_node_run = None
+
+    def _on_single_node_engine_log(self, message):
+        run = getattr(self, "_single_node_run", None)
+        engine = getattr(self, "_single_node_engine", None)
+        if not isinstance(run, dict) or self.sender() is not engine:
+            return
+        text = str(message or "")
+        run.setdefault("logs", []).append(text)
+        if not (
+            text.startswith("代码块输出:")
+            or text.startswith("代码块错误输出:")
+        ):
+            return
+        node_id = str(run.get("node_id") or "")
+        panel = getattr(self, "panel_instances", {}).get("code_block")
+        if panel and hasattr(panel, "append_code_editor_log"):
+            panel.append_code_editor_log(node_id, text)
+
+    def _on_single_node_thread_finished(self):
+        engine = self.sender()
+        self._forget_discarded_single_node_engine(engine)
+
+    def _disconnect_single_node_engine_signals(self, engine):
+        if engine is None:
+            return
+        for signal_name in ("log_signal", "progress_signal", "finished_signal", "finished"):
+            signal = getattr(engine, signal_name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
+    def _wait_single_node_engine_stopped(self, engine, timeout_ms=3000):
+        if engine is None:
+            return True
+        self._disconnect_single_node_engine_signals(engine)
+        try:
+            if not engine.isRunning():
+                engine.deleteLater()
+                return True
+            engine.wait(timeout_ms)
+            stopped = not engine.isRunning()
+            if stopped:
+                engine.deleteLater()
+            return stopped
+        except RuntimeError:
+            return True
+
+    def shutdown_single_node_runtime(self, timeout_ms=3000):
+        self._ensure_single_node_runtime_state()
+        self._single_node_generation += 1
+        run = self._single_node_run
+        self._clear_single_node_timer(run)
+        engines = []
+        if self._single_node_engine is not None:
+            engines.append(self._single_node_engine)
+        engines.extend(list(getattr(self, "_discarded_single_node_engines", []) or []))
+        for engine in engines:
+            if not self._wait_single_node_engine_stopped(engine, timeout_ms):
+                return False
+        self._single_node_engine = None
+        self._single_node_run = None
+        self._discarded_single_node_engines = []
+        return True
+
+    def _release_single_node_run(self, engine):
+        run = getattr(self, "_single_node_run", None)
+        self._clear_single_node_timer(run)
+        if engine is not None:
+            try:
+                if engine.isRunning():
+                    self._retain_discarded_single_node_engine(engine)
+            except RuntimeError:
+                pass
+        if engine is getattr(self, "_single_node_engine", None):
+            self._single_node_engine = None
+            self._single_node_run = None
+
+    def _single_node_code_timeout_ms(self, workflow_config):
+        return workflow_code_timeout_ms(workflow_config)
+
+    def _on_single_node_timeout(self, generation):
+        run = getattr(self, "_single_node_run", None)
+        if not isinstance(run, dict) or run.get("generation") != generation:
+            return
+        node_title = str(run.get("node_title") or "当前节点")
+        message = (
+            f"{node_title} 运行已超时，结果将被忽略；"
+            "后台线程可能仍在收尾，若是阻塞型代码请等待结束或重启程序。"
+        )
+        if hasattr(self, "status_label"):
+            self.status_label.setText(message)
+        self._invalidate_single_node_run(message)
+
+    def _on_single_node_engine_finished(self, success, result_pool):
+        run = getattr(self, "_single_node_run", None)
+        engine = getattr(self, "_single_node_engine", None)
+        if not isinstance(run, dict) or self.sender() is not engine:
+            return
+        try:
+            if run.get("discarded") or run.get("generation") != getattr(self, "_single_node_generation", None):
+                return
+
+            node = self._find_node_by_id(run.get("node_id"))
+            nodes_to_run = [
+                item
+                for item in (self._find_node_by_id(node_id) for node_id in run.get("node_ids", []))
+                if item is not None and not self._is_deleted_qt_object(item)
+            ]
+            panel = getattr(self, "panel_instances", {}).get(str(run.get("node_action") or ""))
+
+            if node is None or self._is_deleted_qt_object(node) or not nodes_to_run:
+                run["discarded"] = True
+                return
+
+            if not success:
+                logs = "\n".join(run.get("logs") or [])
+                message = logs if logs else "节点执行失败"
+                dialog_message = message[-2000:] if len(message) > 2000 else message
+                QMessageBox.critical(self, "运行失败", dialog_message)
+                if panel and hasattr(panel, "set_code_editor_run_result"):
+                    panel.set_code_editor_run_result(node.node_id, False, message)
+                if hasattr(self, "status_label"):
+                    self.status_label.setText("节点运行失败，请查看错误详情")
+                return
+
+            updated_outputs = self._merge_engine_result(result_pool or {}, nodes_to_run)
+            for item in nodes_to_run:
+                item.is_dirty = False
+                item.title = self._node_title_from_params(item)
+                item.update()
+
+            self.refresh_combo_list()
+            current = self._current_live_node()
+            if current is node:
+                self._render_node_preview(node)
+            self._update_status_bar()
+
+            node_outputs = updated_outputs.get(node.node_id, [])
+            output_count = len(node_outputs)
+            if panel and hasattr(panel, "set_code_editor_run_result"):
+                if output_count:
+                    names = "、".join(
+                        str(item.get("name") or item.get("output_id") or "结果")
+                        for item in node_outputs[:5]
+                    )
+                    suffix = "..." if output_count > 5 else ""
+                    panel.set_code_editor_run_result(
+                        node.node_id,
+                        True,
+                        f"运行成功，输出 {output_count} 个结果：{names}{suffix}",
+                    )
+                else:
+                    panel.set_code_editor_run_result(node.node_id, True, "运行成功，未发布可预览输出")
+            if hasattr(self, "status_label"):
+                if node.action_type == "code_block":
+                    self.status_label.setText(f"代码块运行成功，输出 {output_count} 个结果")
+                else:
+                    self.status_label.setText("当前节点已运行并更新预览")
+        finally:
+            self._release_single_node_run(engine)
 
     def on_tool_run_requested(self, action, params):
         node = self._current_live_node()
@@ -361,24 +813,46 @@ class NodeConfigMixin:
         self._run_node(node)
 
     def _run_node(self, node):
-        active_panel = self.panel_instances.get(node.action_type) if node is not None else None
+        if node is None or self._is_deleted_qt_object(node):
+            return False, "未选择节点"
 
-        def code_editor_log_callback(message):
-            text = str(message or "")
-            if not (
-                text.startswith("代码块输出:")
-                or text.startswith("代码块错误输出:")
-            ):
-                return
-            if active_panel and hasattr(active_panel, "append_code_editor_log"):
-                active_panel.append_code_editor_log(node.node_id, text)
+        self._ensure_single_node_runtime_state()
+        active_panel = self.panel_instances.get(node.action_type)
+        full_engine = getattr(self.ctx, "engine", None)
+        try:
+            full_run_active = full_engine is not None and full_engine.isRunning()
+        except RuntimeError:
+            full_run_active = False
+        if full_run_active:
+            message = "全量流程正在后台运行，请等待完成后再运行单个节点。"
+            if hasattr(self, "status_label"):
+                self.status_label.setText(message)
+            if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
+                active_panel.set_code_editor_run_result(node.node_id, False, message)
+            return False, message
+        if hasattr(self.ctx, "discarded_engine_running") and self.ctx.discarded_engine_running():
+            message = "仍有已废弃的全量流程在收尾，请等待结束后再运行单个节点。"
+            if hasattr(self, "status_label"):
+                self.status_label.setText(message)
+            if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
+                active_panel.set_code_editor_run_result(node.node_id, False, message)
+            return False, message
+        if self._single_node_run_active():
+            message = "已有节点正在后台运行，请等待完成后再运行新的节点。"
+            if hasattr(self, "status_label"):
+                self.status_label.setText(message)
+            if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
+                active_panel.set_code_editor_run_result(node.node_id, False, message)
+            return False, message
+        if self._discarded_single_node_engine_running():
+            message = "仍有已废弃的后台任务在收尾，请等待结束后再运行新的节点。"
+            if hasattr(self, "status_label"):
+                self.status_label.setText(message)
+            if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
+                active_panel.set_code_editor_run_result(node.node_id, False, message)
+            return False, message
 
-        if active_panel and hasattr(active_panel, "set_code_editor_running"):
-            active_panel.set_code_editor_running(node.node_id, "正在运行当前代码块...")
-        if getattr(node, "action_type", "") == "code_block" and hasattr(self, "status_label"):
-            self.status_label.setText("代码块运行中...")
-            QApplication.processEvents()
-        nodes_to_run = self._ancestor_nodes_for(node)
+        nodes_to_run = self._nodes_needed_for_run(node)
         config = self.ctx.build_workflow_logic(nodes_to_run)
         if not config:
             message = "当前节点上游存在循环连线，无法执行。"
@@ -386,45 +860,59 @@ class NodeConfigMixin:
             if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
                 active_panel.set_code_editor_run_result(node.node_id, False, message)
             return False, message
+        run_node_ids = {item.node_id for item in nodes_to_run}
+        initial_runtime_data, missing_cache = self._initial_runtime_data_for_config(config, run_node_ids)
+        if missing_cache:
+            nodes_to_run = self._ancestor_nodes_for(node)
+            config = self.ctx.build_workflow_logic(nodes_to_run)
+            if not config:
+                message = "当前节点上游存在循环连线，无法执行。"
+                QMessageBox.warning(self, "运行失败", message)
+                if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
+                    active_panel.set_code_editor_run_result(node.node_id, False, message)
+                return False, message
+            run_node_ids = {item.node_id for item in nodes_to_run}
+            initial_runtime_data = {}
 
-        result = self.ctx.run_workflow_sync(
-            config,
-            keep_intermediates=True,
-            log_callback=code_editor_log_callback,
-        )
-        if not result.get("success"):
-            logs = "\n".join(result.get("logs") or [])
-            message = logs if logs else "节点执行失败"
-            dialog_message = message[-2000:] if len(message) > 2000 else message
-            QMessageBox.critical(self, "运行失败", dialog_message)
-            if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
-                active_panel.set_code_editor_run_result(node.node_id, False, message)
-            return False, message
-
-        updated_outputs = self._merge_engine_result(result.get("pool", {}), nodes_to_run)
-        for item in nodes_to_run:
-            item.is_dirty = False
-            item.title = self._node_title_from_params(item)
-            item.update()
-
-        self.refresh_combo_list()
-        self._render_node_preview(node)
-        self._update_status_bar()
-        node_outputs = updated_outputs.get(node.node_id, [])
-        output_count = len(node_outputs)
-        if active_panel and hasattr(active_panel, "set_code_editor_run_result"):
-            if output_count:
-                names = "、".join(str(item.get("name") or item.get("output_id") or "结果") for item in node_outputs[:5])
-                suffix = "..." if output_count > 5 else ""
-                active_panel.set_code_editor_run_result(node.node_id, True, f"运行成功，输出 {output_count} 个结果：{names}{suffix}")
-            else:
-                active_panel.set_code_editor_run_result(node.node_id, True, "运行成功，未发布可预览输出")
+        if active_panel and hasattr(active_panel, "set_code_editor_running"):
+            active_panel.set_code_editor_running(node.node_id, "正在后台运行当前代码块...")
         if hasattr(self, "status_label"):
             if node.action_type == "code_block":
-                self.status_label.setText(f"代码块运行成功，输出 {output_count} 个结果")
+                self.status_label.setText("代码块后台运行中...")
             else:
-                self.status_label.setText("当前节点已运行并更新预览")
-        return True, "运行成功"
+                self.status_label.setText(f"节点后台运行中: {node.title}")
+
+        self._single_node_generation += 1
+        generation = self._single_node_generation
+        engine = WorkflowEngine(
+            {},
+            copy.deepcopy(config),
+            keep_intermediates=True,
+            initial_runtime_data=initial_runtime_data,
+            return_raw_outputs=True,
+        )
+        self._single_node_engine = engine
+        self._single_node_run = {
+            "generation": generation,
+            "node_id": node.node_id,
+            "node_title": node.title,
+            "node_action": node.action_type,
+            "node_ids": [item.node_id for item in nodes_to_run],
+            "logs": [],
+            "discarded": False,
+        }
+        engine.log_signal.connect(self._on_single_node_engine_log)
+        engine.finished_signal.connect(self._on_single_node_engine_finished)
+        engine.finished.connect(self._on_single_node_thread_finished)
+        timeout_ms = self._single_node_code_timeout_ms(config)
+        if timeout_ms:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(lambda gen=generation: self._on_single_node_timeout(gen))
+            self._single_node_run["timer"] = timer
+            timer.start(timeout_ms)
+        engine.start()
+        return True, "已提交后台运行"
 
     def on_canvas_node_selected(self, node):
         # 点同一个节点不重复刷新面板，保留当前编辑中的配置。

@@ -436,7 +436,6 @@ class CodeBlockOperator(BaseOperator):
         self.validate(inputs, params)
         tables = {}
         workbooks = {}
-        worksheets = {}
         table_index = 0
         workbook_index = 0
         for index, input_item in enumerate(inputs):
@@ -445,19 +444,6 @@ class CodeBlockOperator(BaseOperator):
                 if alias == "current":
                     alias = "wb" if workbook_index == 0 else f"wb{workbook_index}"
                 workbooks[alias] = context.get_input_data(input_item)
-                sheet_name = ""
-                ws_alias = ""
-                for raw in params.get("inputs") or []:
-                    if not isinstance(raw, dict):
-                        continue
-                    if str(raw.get("input_id") or "") == input_item.input_id:
-                        sheet_name = str(raw.get("sheet_name") or "")
-                        ws_alias = str(raw.get("ws_alias") or "")
-                        break
-                if sheet_name or ws_alias:
-                    if not ws_alias:
-                        ws_alias = "ws" if workbook_index == 0 else f"ws{workbook_index}"
-                    worksheets[ws_alias] = {"workbook_alias": alias, "sheet_name": sheet_name}
                 workbook_index += 1
             else:
                 alias = str(input_item.role or ("df" if table_index == 0 else f"df{table_index}")).strip()
@@ -474,7 +460,7 @@ class CodeBlockOperator(BaseOperator):
             tables,
             params.get("code", ""),
             workbooks,
-            worksheets,
+            None,
             params.get("global_code", ""),
             params.get("function_spaces") or [],
             params.get("state", {}),
@@ -483,6 +469,7 @@ class CodeBlockOperator(BaseOperator):
             params.get("timeout_seconds", 10),
             output_names,
             log_callback=log_callback,
+            execution_mode=params.get("execution_mode", "auto"),
         )
         if isinstance(params.get("state"), dict):
             params["state"].clear()

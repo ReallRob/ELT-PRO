@@ -87,6 +87,22 @@ class DesignModeWidget(
         """保存设计模式状态到配置文件（供 main.py closeEvent 调用）"""
         self._save_app_settings()
 
+    def shutdown_for_close(self, timeout_ms=3000):
+        if hasattr(self, "_stop_full_run_timeout_timer"):
+            self._stop_full_run_timeout_timer()
+        if hasattr(self, "shutdown_single_node_runtime") and not self.shutdown_single_node_runtime(timeout_ms):
+            return False
+        if hasattr(self.ctx, "shutdown_for_close") and not self.ctx.shutdown_for_close(timeout_ms):
+            return False
+        if hasattr(self, "_clear_preview_model_cache"):
+            self._clear_preview_model_cache()
+        self.current_selected_node = None
+        if hasattr(self, "preview_tabs"):
+            self.preview_tabs.clear()
+        if hasattr(self, "canvas_scene"):
+            self.canvas_scene.clear()
+        return True
+
     def _save_app_settings(self):
         data = load_workspace_config()
         data["design_mode"] = collect_design_state(self)

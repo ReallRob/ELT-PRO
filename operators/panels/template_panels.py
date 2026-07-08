@@ -16,8 +16,15 @@ from PyQt5.QtWidgets import (
 from operators.base_panel import BaseToolPanel, QLineEdit
 
 
-TEMPLATE_PREVIEW_DEFAULT_ROWS = "5000"
-TEMPLATE_PREVIEW_DEFAULT_COLS = "200"
+TEMPLATE_PREVIEW_DEFAULT_ROWS = ""
+TEMPLATE_PREVIEW_DEFAULT_COLS = ""
+LEGACY_TEMPLATE_PREVIEW_DEFAULT_ROWS = "5000"
+LEGACY_TEMPLATE_PREVIEW_DEFAULT_COLS = "200"
+
+
+def _display_preview_limit(value, legacy_default):
+    text = str(value or "").strip()
+    return "" if text == str(legacy_default) else text
 
 
 class ImportTemplatePanel(BaseToolPanel):
@@ -44,6 +51,7 @@ class ImportTemplatePanel(BaseToolPanel):
         self.template_input.set_parameter_enabled(False)
         self.template_input.setPlaceholderText("选择模板文件 (.xlsx)")
         btn_browse = QPushButton("浏览")
+        self.btn_browse_template = btn_browse
         btn_browse.clicked.connect(self._browse_template)
         path_layout.addWidget(self.template_input)
         path_layout.addWidget(btn_browse)
@@ -54,7 +62,7 @@ class ImportTemplatePanel(BaseToolPanel):
         fl.addRow("模板文件:", path_layout)
         inner.addLayout(fl)
 
-        self.info_label = QLabel("选择模板后自动扫描结构")
+        self.info_label = QLabel("选择模板后不会读取文件；运行当前节点时才加载模板。")
         self.info_label.setWordWrap(True)
         self.info_label.setStyleSheet("color: #64748B; font-size: 11px; border: none;")
         inner.addWidget(self.info_label)
@@ -64,22 +72,14 @@ class ImportTemplatePanel(BaseToolPanel):
         preview_form = QFormLayout()
         preview_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         preview_form.setRowWrapPolicy(QFormLayout.WrapLongRows)
-        self.preview_sheet_input = QLineEdit()
-        self.preview_sheet_input.set_parameter_enabled(False)
-        self.preview_sheet_input.setPlaceholderText("留空则预览全部工作表")
-        preview_form.addRow("预览工作表:", self.preview_sheet_input)
-
-        range_layout = QHBoxLayout()
-        range_layout.setContentsMargins(0, 0, 0, 0)
-        range_layout.setSpacing(6)
         self.preview_start_row_input = QLineEdit("1")
-        self.preview_start_row_input.setPlaceholderText("起始行")
+        self.preview_start_row_input.setPlaceholderText("默认 1")
         self.preview_start_col_input = QLineEdit("1")
-        self.preview_start_col_input.setPlaceholderText("起始列")
+        self.preview_start_col_input.setPlaceholderText("默认 1，可填 A")
         self.preview_max_rows_input = QLineEdit(TEMPLATE_PREVIEW_DEFAULT_ROWS)
-        self.preview_max_rows_input.setPlaceholderText("行数")
+        self.preview_max_rows_input.setPlaceholderText("空=不限制行")
         self.preview_max_cols_input = QLineEdit(TEMPLATE_PREVIEW_DEFAULT_COLS)
-        self.preview_max_cols_input.setPlaceholderText("列数")
+        self.preview_max_cols_input.setPlaceholderText("空=不限制列")
         for widget in (
             self.preview_start_row_input,
             self.preview_start_col_input,
@@ -87,9 +87,10 @@ class ImportTemplatePanel(BaseToolPanel):
             self.preview_max_cols_input,
         ):
             widget.set_parameter_enabled(False)
-            widget.setMaximumWidth(86)
-            range_layout.addWidget(widget)
-        preview_form.addRow("预览范围:", range_layout)
+        preview_form.addRow("起始行:", self.preview_start_row_input)
+        preview_form.addRow("起始列:", self.preview_start_col_input)
+        preview_form.addRow("最大行数:", self.preview_max_rows_input)
+        preview_form.addRow("最大列数:", self.preview_max_cols_input)
         preview_inner.addLayout(preview_form)
         preview_inner.addWidget(self._make_hint_label("加载模板只创建模板主线 wb；写入和保存请连接写入模板/保存模板。"))
 
@@ -98,24 +99,15 @@ class ImportTemplatePanel(BaseToolPanel):
         if not path:
             return
         self.template_input.setText(path)
-        try:
-            from template_engine import close_workbook, load_template
-
-            wb, meta = load_template(path)
-            close_workbook(wb)
-            lines = [f"文件: {os.path.basename(path)}"]
-            for sn, info in meta["sheets"].items():
-                lines.append(f"  Sheet [{sn}]: {info['max_row']} 行 x {info['max_col']} 列")
-            if hasattr(self, "out_input") and not self.out_input.text().strip():
-                self.out_input.setText(self._default_output_name())
-            self.info_label.setText("\n".join(lines))
-        except Exception as e:
-            self.info_label.setText(f"加载失败: {e}")
+        if hasattr(self, "out_input") and not self.out_input.text().strip():
+            self.out_input.setText(self._default_output_name())
+        self.info_label.setText(
+            f"已选择模板文件: {os.path.basename(path)}\n运行当前节点时才会读取 Workbook。"
+        )
 
     def clear_custom_ui(self):
         self.template_input.clear()
-        self.info_label.setText("选择模板后自动扫描结构")
-        self.preview_sheet_input.clear()
+        self.info_label.setText("选择模板后不会读取文件；运行当前节点时才加载模板。")
         self.preview_start_row_input.setText("1")
         self.preview_start_col_input.setText("1")
         self.preview_max_rows_input.setText(TEMPLATE_PREVIEW_DEFAULT_ROWS)
@@ -125,24 +117,31 @@ class ImportTemplatePanel(BaseToolPanel):
         template_path = self.template_input.text().strip()
         output_name = self.out_input.text().strip() if hasattr(self, "out_input") else ""
         output_name = output_name or self._default_output_name()
-        return {
+        params = {
             "template_path": template_path,
-            "preview_sheet_name": self.preview_sheet_input.text().strip(),
             "preview_start_row": self.preview_start_row_input.text().strip() or "1",
             "preview_start_col": self.preview_start_col_input.text().strip() or "1",
-            "preview_max_rows": self.preview_max_rows_input.text().strip() or TEMPLATE_PREVIEW_DEFAULT_ROWS,
-            "preview_max_cols": self.preview_max_cols_input.text().strip() or TEMPLATE_PREVIEW_DEFAULT_COLS,
             "io_prefs": {"output_name": output_name, "output_data_type": "workbook"},
         }
+        max_rows = self.preview_max_rows_input.text().strip()
+        max_cols = self.preview_max_cols_input.text().strip()
+        if max_rows:
+            params["preview_max_rows"] = max_rows
+        if max_cols:
+            params["preview_max_cols"] = max_cols
+        return params
 
     def set_custom_params(self, p):
         if "template_path" in p:
             self.template_input.setText(p["template_path"])
-        self.preview_sheet_input.setText(str(p.get("preview_sheet_name") or ""))
         self.preview_start_row_input.setText(str(p.get("preview_start_row") or "1"))
         self.preview_start_col_input.setText(str(p.get("preview_start_col") or "1"))
-        self.preview_max_rows_input.setText(str(p.get("preview_max_rows") or TEMPLATE_PREVIEW_DEFAULT_ROWS))
-        self.preview_max_cols_input.setText(str(p.get("preview_max_cols") or TEMPLATE_PREVIEW_DEFAULT_COLS))
+        self.preview_max_rows_input.setText(
+            _display_preview_limit(p.get("preview_max_rows"), LEGACY_TEMPLATE_PREVIEW_DEFAULT_ROWS)
+        )
+        self.preview_max_cols_input.setText(
+            _display_preview_limit(p.get("preview_max_cols"), LEGACY_TEMPLATE_PREVIEW_DEFAULT_COLS)
+        )
 
 
 class InsertBlockPanel(BaseToolPanel):

@@ -1,8 +1,6 @@
 import copy
 
 from PyQt5.QtCore import QObject, pyqtSignal
-from PyQt5.QtWidgets import QApplication
-
 from engine import WorkflowEngine
 from core.workflow.schema import normalize_action_params, normalize_output_refs
 
@@ -18,6 +16,8 @@ class WorkspaceContext(QObject):
         self.data_pool = {}
         self.dedup_map = {}
         self.output_key_map = {}
+        self.raw_data_pool = {}
+        self.raw_output_meta = {}
         self.workflow_config = {}
         self.runtime_parameters = {}
         self.parameter_mappings = {}
@@ -56,6 +56,7 @@ class WorkspaceContext(QObject):
                 self.data_pool.pop(old_key, None)
             self.output_key_map[node_id] = {}
             self.dedup_map.pop(node_id, None)
+            self.clear_raw_node_outputs(node_id)
 
         final_keys = []
         for output in outputs or []:
@@ -77,11 +78,59 @@ class WorkspaceContext(QObject):
             return self.data_pool.get(key)
         return None
 
+    def _close_raw_value(self, value):
+        if isinstance(value, dict) and value.get("_wb") is not None:
+            close = getattr(value.get("_wb"), "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    pass
+
+    def clear_raw_node_outputs(self, node_id):
+        node_id = str(node_id or "")
+        if not node_id or not hasattr(self, "raw_data_pool"):
+            return
+        for key in [key for key in self.raw_data_pool if key[0] == node_id]:
+            self._close_raw_value(self.raw_data_pool.pop(key, None))
+        self.raw_output_meta.pop(node_id, None)
+
+    def clear_raw_outputs(self):
+        for value in list(getattr(self, "raw_data_pool", {}).values()):
+            self._close_raw_value(value)
+        self.raw_data_pool = {}
+        self.raw_output_meta = {}
+
+    def update_raw_outputs(self, raw_data=None, raw_output_meta=None, node_ids=None):
+        node_filter = {str(node_id) for node_id in (node_ids or []) if str(node_id or "")}
+        if node_filter:
+            for node_id in node_filter:
+                self.clear_raw_node_outputs(node_id)
+        for raw_key, value in (raw_data or {}).items():
+            if not isinstance(raw_key, tuple) or len(raw_key) != 2:
+                continue
+            node_id, output_id = str(raw_key[0] or ""), str(raw_key[1] or "out_1")
+            if not node_id or (node_filter and node_id not in node_filter):
+                continue
+            self.raw_data_pool[(node_id, output_id)] = value
+        for node_id, outputs in (raw_output_meta or {}).items():
+            node_id = str(node_id or "")
+            if not node_id or (node_filter and node_id not in node_filter):
+                continue
+            self.raw_output_meta[node_id] = list(outputs or [])
+
+    def raw_node_output_refs(self, node_id):
+        return list(getattr(self, "raw_output_meta", {}).get(str(node_id or ""), []) or [])
+
+    def has_raw_output(self, node_id, output_id="out_1"):
+        return (str(node_id or ""), str(output_id or "out_1")) in getattr(self, "raw_data_pool", {})
+
     def clear_context(self):
         """Clear all workflow runtime state and invalidate any in-flight run."""
         self.data_pool.clear()
         self.dedup_map.clear()
         self.output_key_map.clear()
+        self.clear_raw_outputs()
         self.workflow_config = {}
         self.runtime_parameters = {}
         self.parameter_mappings = {}
@@ -193,6 +242,7 @@ class WorkspaceContext(QObject):
         generation = self._run_generation
         workflow_snapshot = copy.deepcopy(self.workflow_config)
         self.engine = WorkflowEngine({}, workflow_snapshot, keep_intermediates=True)
+        self.engine.return_raw_outputs = True
         self.engine.finished_signal.connect(
             lambda success, result_pool, gen=generation: self._on_engine_finished(
                 success, result_pool, gen
@@ -201,29 +251,12 @@ class WorkspaceContext(QObject):
         self.engine.start()
 
     def run_workflow_sync(self, workflow_config, keep_intermediates=True, log_callback=None):
-        """Run a small workflow synchronously for design-time single-node execution."""
-        engine = WorkflowEngine({}, workflow_config, keep_intermediates=keep_intermediates)
-        messages = []
-        result_holder = {"success": False, "pool": {}}
+        """Legacy sync execution is intentionally disabled for design mode.
 
-        def handle_log(message):
-            messages.append(message)
-            if callable(log_callback):
-                try:
-                    log_callback(message)
-                except Exception:
-                    pass
-            app = QApplication.instance()
-            if app is not None:
-                app.processEvents()
-
-        engine.log_signal.connect(handle_log)
-        engine.finished_signal.connect(
-            lambda success, pool: result_holder.update({"success": success, "pool": pool})
-        )
-        engine.run()
-        result_holder["logs"] = messages
-        return result_holder
+        Use WorkflowEngine.start() with generation/discard checks so heavy I/O,
+        preview conversion, saving, and user code never run on the UI thread.
+        """
+        raise RuntimeError("设计态不再支持同步运行工作流，请使用后台 WorkflowEngine.start()")
 
     def _discard_current_engine(self):
         engine = self.engine
@@ -245,12 +278,72 @@ class WorkspaceContext(QObject):
         except ValueError:
             pass
 
+    def discard_current_workflow_run(self):
+        self._run_generation += 1
+        self._discard_current_engine()
+
+    def discarded_engine_running(self):
+        running = []
+        for engine in list(self._discarded_engines):
+            try:
+                if engine.isRunning():
+                    running.append(engine)
+                else:
+                    self._forget_discarded_engine(engine)
+            except RuntimeError:
+                self._forget_discarded_engine(engine)
+        return bool(running)
+
+    def _disconnect_engine_signals(self, engine):
+        if engine is None:
+            return
+        for signal_name in ("log_signal", "progress_signal", "finished_signal", "finished"):
+            signal = getattr(engine, signal_name, None)
+            if signal is None:
+                continue
+            try:
+                signal.disconnect()
+            except (TypeError, RuntimeError):
+                pass
+
+    def _wait_engine_stopped(self, engine, timeout_ms=3000):
+        if engine is None:
+            return True
+        self._disconnect_engine_signals(engine)
+        try:
+            if not engine.isRunning():
+                engine.deleteLater()
+                return True
+            engine.wait(timeout_ms)
+            stopped = not engine.isRunning()
+            if stopped:
+                engine.deleteLater()
+            return stopped
+        except RuntimeError:
+            return True
+
+    def shutdown_for_close(self, timeout_ms=3000):
+        """Stop callbacks and release runtime objects before Qt destroys the UI."""
+        self._run_generation += 1
+        engines = []
+        if self.engine is not None:
+            engines.append(self.engine)
+        engines.extend(list(getattr(self, "_discarded_engines", []) or []))
+        for engine in engines:
+            if not self._wait_engine_stopped(engine, timeout_ms):
+                return False
+        self.engine = None
+        self._discarded_engines = []
+        self.clear_raw_outputs()
+        return True
+
     def _on_engine_finished(self, success, result_pool, generation=None):
         """Receive engine results, ignoring stale runs from a previous workflow."""
         if generation is not None and generation != self._run_generation:
             return
 
         if success:
+            self.clear_raw_outputs()
             self.data_pool.clear()
             self.dedup_map.clear()
             self.output_key_map.clear()
@@ -258,6 +351,10 @@ class WorkspaceContext(QObject):
                 self.data_pool.update(result_pool["data"])
                 self.dedup_map.update(result_pool.get("dedup_map", {}))
                 self.output_key_map.update(result_pool.get("output_key_map", {}))
+                self.update_raw_outputs(
+                    result_pool.get("raw_data", {}),
+                    result_pool.get("raw_output_meta", {}),
+                )
             elif isinstance(result_pool, dict):
                 self.data_pool.update(result_pool)
         self.workflow_finished.emit(success, result_pool)

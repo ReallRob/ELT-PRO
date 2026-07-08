@@ -48,6 +48,10 @@ class CanvasActionsMixin:
         if getattr(self, "current_selected_node", None) is node:
             self.current_selected_node = None
             self.on_canvas_node_selected(None)
+        if hasattr(self, "_clear_runtime_outputs_for_nodes"):
+            self._clear_runtime_outputs_for_nodes([node], mark_dirty=False)
+        if hasattr(self, "_mark_direct_downstream_stale_edges"):
+            self._mark_direct_downstream_stale_edges(node, "上游节点已删除，下游需重新连接或重新运行")
         for edge in list(node.edges_in):
             if self._is_deleted_qt_object(edge):
                 continue
@@ -101,6 +105,8 @@ class CanvasActionsMixin:
             QMessageBox.No,
         )
         if reply == QMessageBox.Yes:
+            if hasattr(self, "_invalidate_single_node_run"):
+                self._invalidate_single_node_run("画布已清空，当前单节点运行结果将被忽略")
             self.canvas_scene.clear()
             self.ctx.clear_context()
             self.refresh_combo_list()
@@ -118,6 +124,28 @@ class CanvasActionsMixin:
             QTimer.singleShot(0, self.canvas_view.center_on_canvas)
 
     def delete_canvas_node(self):
+        selected_nodes = [
+            item
+            for item in self.canvas_scene.selectedItems()
+            if isinstance(item, NodeItem)
+        ]
+        selected_edges = [
+            item
+            for item in self.canvas_scene.selectedItems()
+            if isinstance(item, EdgeItem)
+        ]
+        if hasattr(self, "_clear_runtime_outputs_for_nodes"):
+            self._clear_runtime_outputs_for_nodes(selected_nodes, mark_dirty=False)
+        if hasattr(self, "_mark_direct_downstream_stale_edges"):
+            for node in selected_nodes:
+                self._mark_direct_downstream_stale_edges(node, "上游节点已删除，下游需重新连接或重新运行")
+        if selected_edges and hasattr(self, "_mark_input_edges_stale_for_nodes"):
+            affected = [
+                edge.dest_node
+                for edge in selected_edges
+                if not self._is_deleted_qt_object(edge) and edge.dest_node is not None
+            ]
+            self._mark_input_edges_stale_for_nodes(affected, "输入连线已删除，目标节点需重新运行")
         self.canvas_scene.delete_selected_items()
         self._sync_runtime_parameters()
         self._update_status_bar()

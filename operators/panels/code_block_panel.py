@@ -56,6 +56,8 @@ _RESERVED_ALIASES = {
     "wbs",
     "wss",
     "locals",
+    "should_cancel",
+    "check_cancel",
 }
 
 def _valid_alias(alias):
@@ -455,11 +457,6 @@ class CodeEditorDialog(QDialog):
             alias = role or ("wb" if data_type == "workbook" else "df")
             type_label = "Workbook" if data_type == "workbook" else "DataFrame"
             lines.append(f"{alias}  # {type_label}: {name}")
-            if data_type == "workbook":
-                sheet_name = str(item.get("sheet_name") or "active")
-                ws_alias = str(item.get("ws_alias") or "")
-                if ws_alias:
-                    lines.append(f"{ws_alias}  # Worksheet: {alias}[{sheet_name!r}]")
         if lines:
             return "\n".join(lines)
         return "暂无输入\n可以只运行脚本；需要给下游节点时，赋值 result 或 return 新建的 DataFrame/Workbook。"
@@ -846,7 +843,10 @@ class CodeBlockPanel(BaseToolPanel):
         self.timeout_input = QLineEdit("10")
         self.timeout_input.setMaximumWidth(96)
         self.timeout_input.setPlaceholderText("1-3600 秒")
-        self.timeout_input.setToolTip("代码块最长运行 3600 秒，超时后会终止独立执行进程。")
+        self.timeout_input.setToolTip(
+            "代码块最长运行 3600 秒。数据表模式会使用独立进程，超时可强制终止；"
+            "包含模板 Workbook 时为避免大文件反复保存加载，会使用内存执行，支持行级超时和 check_cancel() 协作取消。"
+        )
         basic_form.addRow("超时:", self.timeout_input)
         basic_inner.addLayout(basic_form)
 
@@ -855,7 +855,12 @@ class CodeBlockPanel(BaseToolPanel):
         self.bindings_layout = QVBoxLayout()
         self.bindings_layout.setSpacing(6)
         input_inner.addLayout(self.bindings_layout)
-        self.input_hint = self._make_hint_label("输入彼此同级；数据表默认生成 df、df1，模板默认生成 wb、wb1。代码块可以无输出运行；有下游节点时请设置 result/df/wb 或 return。需要工作表变量时填写 Sheet。")
+        self.input_hint = self._make_hint_label(
+            "输入彼此同级；数据表默认生成 df、df1，模板默认生成 wb、wb1。"
+            "需要工作表时可在代码中写 ws = wb.active 或 ws = wb['Sheet名']；"
+            "包含模板 Workbook 时会直接使用内存对象执行，避免大模板保存/加载往返；"
+            "长循环建议定期调用 check_cancel()；有下游节点时请设置 result/df/wb 或 return。"
+        )
         input_inner.addWidget(self.input_hint)
 
         code_card, code_inner = self._make_card("代码")
@@ -1073,14 +1078,6 @@ class CodeBlockPanel(BaseToolPanel):
             return "wb" if index_by_type == 0 else f"wb{index_by_type}"
         return "df" if index_by_type == 0 else f"df{index_by_type}"
 
-    def _default_ws_alias(self, workbook_alias):
-        text = str(workbook_alias or "wb").strip()
-        if text == "wb":
-            return "ws"
-        if text.startswith("wb"):
-            return "ws" + text[2:]
-        return f"{text}_ws"
-
     def _binding_key(self, item):
         source_node_id = str(item.get("source_node_id") or "").strip()
         source_output_id = str(item.get("source_output_id") or "out_1").strip() or "out_1"
@@ -1131,14 +1128,10 @@ class CodeBlockPanel(BaseToolPanel):
             type_index = type_counts.get(data_type, 0)
             type_counts[data_type] = type_index + 1
             alias = str(saved.get("alias") or self._default_alias_for_type(data_type, type_index)).strip()
-            sheet_name = str(saved.get("sheet_name") or "").strip()
-            ws_alias = str(saved.get("ws_alias") or "").strip()
             result.append(
                 {
                     "table_name": table_name,
                     "alias": alias,
-                    "sheet_name": sheet_name,
-                    "ws_alias": ws_alias,
                     "source_node_id": source_node_id,
                     "source_output_id": source_output_id,
                     "data_type": data_type,
@@ -1209,31 +1202,6 @@ class CodeBlockPanel(BaseToolPanel):
         main_line.addWidget(QLabel("变量名"))
         main_line.addWidget(alias_input)
         layout.addLayout(main_line)
-        if data_type == "workbook":
-            sheet_line = QHBoxLayout()
-            sheet_line.setContentsMargins(0, 0, 0, 0)
-            sheet_line.setSpacing(6)
-            sheet_input = QLineEdit(str(source.get("sheet_name") or ""))
-            sheet_input.setObjectName("sheet_name")
-            sheet_input.setPlaceholderText("工作表/留空active")
-            sheet_input.setMinimumWidth(96)
-            sheet_input.setProperty("_param_disabled", True)
-            if hasattr(sheet_input, "set_parameter_enabled"):
-                sheet_input.set_parameter_enabled(False)
-            ws_alias_input = QLineEdit(str(source.get("ws_alias") or ""))
-            ws_alias_input.setObjectName("ws_alias")
-            ws_alias_input.setPlaceholderText(self._default_ws_alias(alias_input.text()))
-            ws_alias_input.setMaximumWidth(96)
-            ws_alias_input.setMinimumWidth(72)
-            ws_alias_input.setProperty("_param_disabled", True)
-            if hasattr(ws_alias_input, "set_parameter_enabled"):
-                ws_alias_input.set_parameter_enabled(False)
-            sheet_line.addSpacing(34)
-            sheet_line.addWidget(QLabel("Sheet"))
-            sheet_line.addWidget(sheet_input, stretch=1)
-            sheet_line.addWidget(QLabel("WS变量"))
-            sheet_line.addWidget(ws_alias_input)
-            layout.addLayout(sheet_line)
         self.bindings_layout.addWidget(row)
 
     def _bindings_from_inputs(self, inputs):
@@ -1248,8 +1216,6 @@ class CodeBlockPanel(BaseToolPanel):
                 {
                     "table_name": str(item.get("name") or ""),
                     "alias": alias,
-                    "sheet_name": str(item.get("sheet_name") or ""),
-                    "ws_alias": str(item.get("ws_alias") or ""),
                     "source_node_id": str(item.get("source_node_id") or ""),
                     "source_output_id": str(item.get("source_output_id") or "out_1"),
                     "data_type": str(item.get("data_type") or "table"),
@@ -1265,22 +1231,14 @@ class CodeBlockPanel(BaseToolPanel):
                 continue
             table_label = row.findChild(QLabel, "table_name")
             alias_input = row.findChild(QLineEdit, "alias")
-            sheet_input = row.findChild(QLineEdit, "sheet_name")
-            ws_alias_input = row.findChild(QLineEdit, "ws_alias")
             table_name = table_label.text().strip() if table_label else ""
             if not table_name:
                 continue
             alias = alias_input.text().strip() if alias_input else self._default_alias(i)
-            sheet_name = sheet_input.text().strip() if sheet_input else ""
-            ws_alias = ws_alias_input.text().strip() if ws_alias_input else ""
-            if sheet_name and not ws_alias:
-                ws_alias = self._default_ws_alias(alias)
             bindings.append(
                 {
                     "table_name": table_name,
                     "alias": alias,
-                    "sheet_name": sheet_name,
-                    "ws_alias": ws_alias,
                     "source_node_id": str(row.property("source_node_id") or ""),
                     "source_output_id": str(row.property("source_output_id") or f"out_{i + 1}"),
                     "data_type": str(row.property("data_type") or "table"),
@@ -1300,8 +1258,6 @@ class CodeBlockPanel(BaseToolPanel):
                     "role": binding.get("alias") or self._default_alias(index - 1),
                     "data_type": binding.get("data_type", "table"),
                     "enabled": True,
-                    "sheet_name": binding.get("sheet_name", ""),
-                    "ws_alias": binding.get("ws_alias", ""),
                 }
             )
         return inputs
@@ -1434,23 +1390,6 @@ class CodeBlockPanel(BaseToolPanel):
                 QMessageBox.warning(self, "变量名重复", f"变量名重复：{alias}")
                 return False, None
             aliases.append(alias)
-            if binding.get("data_type") == "workbook":
-                ws_alias = binding.get("ws_alias", "")
-                if binding.get("sheet_name") and not ws_alias:
-                    ws_alias = self._default_ws_alias(alias)
-                if not ws_alias:
-                    continue
-                if not _valid_alias(ws_alias):
-                    QMessageBox.warning(
-                        self,
-                        "变量名无效",
-                        f"工作表变量名只能使用英文、数字和下划线，不能以数字开头，也不能使用内置名：{ws_alias}",
-                    )
-                    return False, None
-                if ws_alias in aliases:
-                    QMessageBox.warning(self, "变量名重复", f"变量名重复：{ws_alias}")
-                    return False, None
-                aliases.append(ws_alias)
         if not self.code_text.strip():
             QMessageBox.warning(self, "代码为空", "请先点击“编辑代码”编写代码。")
             return False, None

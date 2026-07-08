@@ -14,6 +14,7 @@ from PyQt5.QtWidgets import (
 
 from core.dataframe_ops import CSV_SHEET_LABEL
 from operators.base_panel import BaseToolPanel, QLineEdit
+from operators.panels.background_scanners import ExcelSheetScanThread
 
 
 class LoadFilePanel(BaseToolPanel):
@@ -84,18 +85,62 @@ class LoadFilePanel(BaseToolPanel):
 
     def update_sheets(self, path):
         current = self.sheet_combo.currentText()
-        sheets = []
-        if path.endswith((".xlsx", ".xls")):
-            try:
-                import pandas as pd
+        path = str(path or "").strip()
+        self._sheet_scan_generation = getattr(self, "_sheet_scan_generation", 0) + 1
+        generation = self._sheet_scan_generation
+        old_thread = getattr(self, "_sheet_scan_thread", None)
+        if old_thread is not None:
+            self._retain_sheet_scan_thread(old_thread)
+            self._sheet_scan_thread = None
+            self.sheet_combo.setEnabled(True)
+        if not path:
+            self._set_combo_items_preserving_text(self.sheet_combo, [], current)
+            return
+        if not path.lower().endswith((".xlsx", ".xls")):
+            self._set_combo_items_preserving_text(self.sheet_combo, [CSV_SHEET_LABEL], current)
+            self.auto_update_out_name(self.sheet_combo.currentText())
+            return
 
-                with pd.ExcelFile(path) as excel:
-                    sheets = list(excel.sheet_names)
-            except Exception:
-                pass
-        else:
-            sheets = [CSV_SHEET_LABEL] if path else []
-        self._set_combo_items_preserving_text(self.sheet_combo, sheets, current)
+        self._set_combo_items_preserving_text(self.sheet_combo, ["正在读取工作表..."], current)
+        self.sheet_combo.setEnabled(False)
+        thread = ExcelSheetScanThread(generation, path, self)
+        self._sheet_scan_thread = thread
+        thread.finished_signal.connect(self._on_sheet_scan_finished)
+        thread.finished.connect(lambda t=thread: self._forget_sheet_scan_thread(t))
+        thread.start()
+
+    def _retain_sheet_scan_thread(self, thread):
+        retained = getattr(self, "_retained_sheet_scan_threads", None)
+        if retained is None:
+            retained = []
+            self._retained_sheet_scan_threads = retained
+        if thread not in retained:
+            retained.append(thread)
+
+    def _forget_sheet_scan_thread(self, thread):
+        if thread is getattr(self, "_sheet_scan_thread", None):
+            self._sheet_scan_thread = None
+            self.sheet_combo.setEnabled(True)
+        try:
+            self._retained_sheet_scan_threads.remove(thread)
+        except (AttributeError, ValueError):
+            pass
+
+    def _on_sheet_scan_finished(self, generation, path, sheets, error):
+        if generation != getattr(self, "_sheet_scan_generation", None):
+            return
+        if str(path or "") != self.path_input.text().strip():
+            return
+        current = self.sheet_combo.currentText()
+        if current == "正在读取工作表...":
+            current = ""
+        if error:
+            self._set_combo_items_preserving_text(self.sheet_combo, [], current)
+            self.sheet_combo.setToolTip(f"读取工作表失败: {error}")
+            return
+        self.sheet_combo.setToolTip("")
+        self._set_combo_items_preserving_text(self.sheet_combo, list(sheets or []), current)
+        self.auto_update_out_name(self.sheet_combo.currentText())
 
     def auto_update_out_name(self, text):
         if not text:

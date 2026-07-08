@@ -7,8 +7,9 @@ from PyQt5.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QTabWidget,
+    QMessageBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
 from ui.design.design_mode import DesignModeWidget
@@ -29,6 +30,9 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         self.load_workspace_state()
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown_pages)
 
     def init_ui(self):
         central_widget = QWidget()
@@ -109,6 +113,12 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_execute, "get_state"):
             exec_state = self.page_execute.get_state()
 
+        ok, message = self.shutdown_pages()
+        if not ok:
+            QMessageBox.warning(self, "关闭中", message)
+            event.ignore()
+            return
+
         # 3. 合并已有配置并写入
         existing = {}
         if CONFIG_FILE_PATH.exists():
@@ -132,21 +142,39 @@ class MainWindow(QMainWindow):
             print(f"保存配置失败: {e}")
 
         event.accept()
+        app = QApplication.instance()
+        if app is not None:
+            QTimer.singleShot(0, app.quit)
+
+    def shutdown_pages(self):
+        if getattr(self, "_shutdown_started", False):
+            return True, ""
+        self._shutdown_started = True
+        if hasattr(self.page_design, "shutdown_for_close") and not self.page_design.shutdown_for_close():
+            self._shutdown_started = False
+            return False, "设计模式仍有后台任务在运行，请等待任务结束后再关闭。"
+        if hasattr(self.page_execute, "shutdown_for_close") and not self.page_execute.shutdown_for_close():
+            self._shutdown_started = False
+            return False, "执行模式仍有后台任务在运行，请等待任务结束后再关闭。"
+        return True, ""
 
 
 if __name__ == "__main__":
-    multiprocessing.freeze_support()
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    try:
+        multiprocessing.freeze_support()
+        QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+        QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 
-    app = QApplication(sys.argv)
-    install_combo_wheel_guard(app)
+        app = QApplication(sys.argv)
+        install_combo_wheel_guard(app)
 
-    global_font = QFont("Microsoft YaHei", 10)
-    app.setFont(global_font)
-    app.setStyle("Fusion")
+        global_font = QFont("Microsoft YaHei", 10)
+        app.setFont(global_font)
+        app.setStyle("Fusion")
 
-    window = MainWindow()
-    window.show()
+        window = MainWindow()
+        window.show()
 
-    sys.exit(app.exec_())
+        sys.exit(app.exec_())
+    except Exception as e:
+        print(e)

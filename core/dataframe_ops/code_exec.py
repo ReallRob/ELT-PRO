@@ -13,6 +13,7 @@ import multiprocessing as mp
 import queue
 import re
 import shutil
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -105,6 +106,8 @@ _RESERVED_ALIASES = {
     "wss",
     "locals",
     "result",
+    "should_cancel",
+    "check_cancel",
     "__builtins__",
 }
 _ALLOWED_WRAPPED_NAMES = {
@@ -129,6 +132,8 @@ _ALLOWED_WRAPPED_NAMES = {
     "wss",
     "wb",
     "ws",
+    "should_cancel",
+    "check_cancel",
 }
 
 
@@ -192,10 +197,43 @@ class _QueueWriter:
             pass
 
 
+class _CallbackWriter:
+    def __init__(self, log_callback, stream):
+        self._log_callback = log_callback
+        self._stream = stream
+        self._buffer = ""
+
+    def write(self, text):
+        value = str(text or "")
+        if not value:
+            return 0
+        self._buffer += value
+        while "\n" in self._buffer:
+            line, self._buffer = self._buffer.split("\n", 1)
+            self._emit(line.rstrip("\r"))
+        if len(self._buffer) > MAX_LOG_LINE_CHARS:
+            self._emit(self._buffer[:MAX_LOG_LINE_CHARS] + " ...[已截断]")
+            self._buffer = ""
+        return len(value)
+
+    def flush(self):
+        if self._buffer:
+            self._emit(self._buffer.rstrip("\r"))
+            self._buffer = ""
+
+    def _emit(self, line):
+        _emit_code_log(self._log_callback, self._stream, str(line))
+
+
 def _emit_code_log(log_callback, stream, message):
     if not callable(log_callback):
         return
-    prefix = "代码块错误输出" if stream == "stderr" else "代码块输出"
+    if stream == "stderr":
+        prefix = "代码块错误输出"
+    elif stream == "info":
+        prefix = "代码块提示"
+    else:
+        prefix = "代码块输出"
     text = f"{prefix}: {message}" if str(message) else f"{prefix}:"
     try:
         log_callback(text)
@@ -323,39 +361,6 @@ def _workbook_entry_meta(entry):
     }
 
 
-def _pack_workbooks_for_process(raw_workbooks, tmp_dir):
-    packed = {}
-    tmp_dir = Path(tmp_dir)
-    for index, (alias, value) in enumerate((raw_workbooks or {}).items(), start=1):
-        alias = str(alias or "").strip()
-        if not alias:
-            continue
-        if not is_valid_code_alias(alias):
-            raise ValueError(f"变量名无效: {alias}")
-        wb = value.get("_wb") if isinstance(value, dict) else value
-        if not isinstance(wb, Workbook):
-            raise TypeError(f"变量 {alias} 对应的输入不是 Workbook")
-        input_path = tmp_dir / f"input_wb_{index}.xlsx"
-        wb.save(input_path)
-        packed[alias] = {
-            "_workbook_path": str(input_path),
-            "_entry_meta": _workbook_entry_meta(value),
-        }
-    return packed
-
-
-def _load_process_workbook_inputs(raw_workbooks):
-    loaded = {}
-    for alias, item in (raw_workbooks or {}).items():
-        if isinstance(item, dict) and item.get("_workbook_path"):
-            entry = dict(item.get("_entry_meta") or {})
-            entry["_wb"] = openpyxl.load_workbook(item.get("_workbook_path"))
-            loaded[alias] = entry
-        else:
-            loaded[alias] = item
-    return loaded
-
-
 def _load_workbook_entry_from_path(item):
     entry = dict(item.get("entry_meta") or {})
     entry["_wb"] = openpyxl.load_workbook(item.get("path"))
@@ -432,6 +437,38 @@ def _execute_function_spaces(exec_env, function_spaces, legacy_global_code=""):
         if space.get("expose_globals", False):
             exec_env.update(public)
     return spaces
+
+
+class _CodeExecutionGuard:
+    def __init__(self, timeout_seconds=None):
+        self.timeout_seconds = coerce_timeout_seconds(timeout_seconds) if timeout_seconds else None
+        self.deadline = time.monotonic() + self.timeout_seconds if self.timeout_seconds else None
+        self.cancel_requested = False
+
+    def should_cancel(self):
+        return self.cancel_requested or self.is_timed_out()
+
+    def check_cancel(self):
+        if self.cancel_requested:
+            raise TimeoutError("代码块已取消")
+        if self.is_timed_out():
+            raise TimeoutError(f"代码块执行超过 {self.timeout_seconds:g} 秒")
+        return False
+
+    def is_timed_out(self):
+        return self.deadline is not None and time.monotonic() >= self.deadline
+
+    def should_trace_frame(self, frame):
+        filename = str(getattr(frame.f_code, "co_filename", ""))
+        return filename.startswith("<当前代码块") or filename.startswith("<函数空间")
+
+    def trace(self, frame, event, arg):
+        if event == "call":
+            self.check_cancel()
+            return self.trace if self.should_trace_frame(frame) else None
+        if event == "line":
+            self.check_cancel()
+        return self.trace
 
 
 def _fallback_output_name(output_names, index):
@@ -566,8 +603,6 @@ def _wrap_code_as_main(code, available_names):
 def _execute_code_payload(payload):
     tables = _prepare_tables(payload.get("tables") or {})
     raw_workbooks = payload.get("workbooks") or {}
-    if payload.get("process_workbook_paths"):
-        raw_workbooks = _load_process_workbook_inputs(raw_workbooks)
     workbooks, workbook_entries = _prepare_workbooks(raw_workbooks)
     if payload.get("process_output_dir"):
         workbook_entries["__process_output_dir__"] = payload.get("process_output_dir")
@@ -577,6 +612,7 @@ def _execute_code_payload(payload):
     mappings = normalize_parameter_mappings(payload.get("parameter_mappings") or {})
     state = dict(payload.get("state") or {})
     fallback_alias = str(payload.get("fallback_alias") or "df").strip() or "df"
+    guard = _CodeExecutionGuard(payload.get("timeout_seconds"))
 
     def param(name, mapping_name=None):
         expression = str(name).strip()
@@ -617,6 +653,8 @@ def _execute_code_payload(payload):
         "wbs": wbs,
         "wss": wss,
         "wb": primary_wb,
+        "should_cancel": guard.should_cancel,
+        "check_cancel": guard.check_cancel,
     }
     if primary_ws is not None:
         exec_env["ws"] = primary_ws
@@ -627,21 +665,26 @@ def _execute_code_payload(payload):
     global_code = str(payload.get("global_code") or "")
     function_spaces = payload.get("function_spaces") or []
     node_code = str(payload.get("code") or "")
-    _execute_function_spaces(exec_env, function_spaces, global_code)
+    previous_trace = sys.gettrace()
+    sys.settrace(guard.trace)
+    try:
+        _execute_function_spaces(exec_env, function_spaces, global_code)
 
-    explicit_return = False
-    returned = None
-    local_vars = {}
-    if node_code.strip():
-        wrapped = _wrap_code_as_main(node_code, exec_env.keys())
-        exec(compile(wrapped, "<当前代码块>", "exec"), exec_env, exec_env)
-        returned = exec_env["__code_block_main__"]()
-        if isinstance(returned, dict) and set(returned.keys()) == {_LOCAL_RETURN_KEY}:
-            local_vars = dict(returned.get(_LOCAL_RETURN_KEY) or {})
-            if isinstance(local_vars.get("state"), dict):
-                state = local_vars["state"]
-        else:
-            explicit_return = True
+        explicit_return = False
+        returned = None
+        local_vars = {}
+        if node_code.strip():
+            wrapped = _wrap_code_as_main(node_code, exec_env.keys())
+            exec(compile(wrapped, "<当前代码块>", "exec"), exec_env, exec_env)
+            returned = exec_env["__code_block_main__"]()
+            if isinstance(returned, dict) and set(returned.keys()) == {_LOCAL_RETURN_KEY}:
+                local_vars = dict(returned.get(_LOCAL_RETURN_KEY) or {})
+                if isinstance(local_vars.get("state"), dict):
+                    state = local_vars["state"]
+            else:
+                explicit_return = True
+    finally:
+        sys.settrace(previous_trace)
 
     target_col = str(payload.get("target_col") or "").strip()
     result_name = str(payload.get("result_name") or "").strip()
@@ -714,6 +757,59 @@ def _unpack_process_outputs(result):
     return unpacked
 
 
+def _normalize_execution_mode(execution_mode, workbooks=None, worksheets=None):
+    mode = str(execution_mode or "auto").strip().lower()
+    if mode not in {"auto", "process", "inline"}:
+        mode = "auto"
+    if workbooks or worksheets:
+        # Workbook objects stay in-process; temp-xlsx handoff is the source of large-template stalls.
+        return "inline"
+    if mode == "auto":
+        return "process"
+    return mode
+
+
+def _outputs_from_items(items):
+    return [
+        CodeExecutionOutput(
+            name=str(item.get("name") or f"代码结果{index}"),
+            data=item.get("data"),
+            data_type=str(item.get("data_type") or "table"),
+        )
+        for index, item in enumerate(items or [], start=1)
+        if isinstance(item, dict)
+    ]
+
+
+def _run_dataframe_code_inline(payload, log_callback=None, timeout_seconds=None):
+    payload = dict(payload)
+    payload["timeout_seconds"] = timeout_seconds
+    if callable(log_callback):
+        stdout_writer = _CallbackWriter(log_callback, "stdout")
+        stderr_writer = _CallbackWriter(log_callback, "stderr")
+        try:
+            with redirect_stdout(stdout_writer), redirect_stderr(stderr_writer):
+                result = _execute_code_payload(payload)
+        except TimeoutError as exc:
+            raise TimeoutError(f"{payload.get('error_prefix') or '代码执行'}超时：{exc}")
+        except Exception:
+            raise ValueError(f"{payload.get('error_prefix') or '代码执行'}失败：\n{traceback.format_exc()}")
+        finally:
+            stdout_writer.flush()
+            stderr_writer.flush()
+    else:
+        try:
+            result = _execute_code_payload(payload)
+        except TimeoutError as exc:
+            raise TimeoutError(f"{payload.get('error_prefix') or '代码执行'}超时：{exc}")
+        except Exception:
+            raise ValueError(f"{payload.get('error_prefix') or '代码执行'}失败：\n{traceback.format_exc()}")
+    return CodeExecutionResult(
+        outputs=_outputs_from_items(result.get("outputs") or []),
+        state=dict(result.get("state") or {}),
+    )
+
+
 def run_dataframe_code(
     tables,
     code,
@@ -731,6 +827,7 @@ def run_dataframe_code(
     output_names=None,
     error_prefix="代码执行",
     log_callback=None,
+    execution_mode="auto",
 ):
     """Run user code and return DataFrame/workbook outputs."""
     timeout_seconds = coerce_timeout_seconds(timeout_seconds)
@@ -748,17 +845,27 @@ def run_dataframe_code(
         "fallback_alias": fallback_alias,
         "target_col": target_col,
         "output_names": output_names or [],
+        "error_prefix": error_prefix,
+        "timeout_seconds": timeout_seconds,
     }
+
+    mode = _normalize_execution_mode(execution_mode, workbooks, worksheets)
+    if mode == "inline":
+        _emit_code_log(
+            log_callback,
+            "info",
+            "检测到 Workbook/Worksheet 输入，使用内存执行模式，避免大模板保存/加载往返；已启用行级超时和 check_cancel() 协作取消。"
+        )
+        return _run_dataframe_code_inline(payload, log_callback, timeout_seconds)
+    if workbooks or worksheets:
+        raise RuntimeError("Workbook/Worksheet 代码块禁止进入子进程模式")
 
     tmp_root = tempfile.mkdtemp(prefix="code_block_")
     try:
         tmp_dir = Path(tmp_root)
-        if workbooks:
-            payload["workbooks"] = _pack_workbooks_for_process(workbooks, tmp_dir)
-            payload["process_workbook_paths"] = True
-            output_dir = tmp_dir / "outputs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-            payload["process_output_dir"] = str(output_dir)
+        output_dir = tmp_dir / "outputs"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        payload["process_output_dir"] = str(output_dir)
 
         ctx = _get_code_process_context()
         result_queue = ctx.Queue(maxsize=1)
@@ -804,15 +911,7 @@ def run_dataframe_code(
             raise ValueError(f"{error_prefix}失败：\n{result}")
         process_outputs = _unpack_process_outputs(result)
 
-        outputs = [
-            CodeExecutionOutput(
-                name=str(item.get("name") or f"代码结果{index}"),
-                data=item.get("data"),
-                data_type=str(item.get("data_type") or "table"),
-            )
-            for index, item in enumerate(process_outputs, start=1)
-            if isinstance(item, dict)
-        ]
+        outputs = _outputs_from_items(process_outputs)
         return CodeExecutionResult(outputs=outputs, state=dict(result.get("state") or {}))
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

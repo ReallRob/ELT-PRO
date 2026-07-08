@@ -38,13 +38,19 @@ def worksheet_to_preview_df(
     max_rows=TEMPLATE_PREVIEW_MAX_ROWS,
     max_cols=TEMPLATE_PREVIEW_MAX_COLS,
 ):
-    """Build a bounded preview DataFrame for one worksheet range."""
+    """Build a preview DataFrame for one worksheet range."""
     source_rows = ws.max_row or 0
     source_cols = ws.max_column or 0
     start_row = _coerce_preview_bound(start_row, 1)
     start_col = _coerce_preview_bound(start_col, 1, allow_column_letters=True)
-    max_rows = _coerce_preview_bound(max_rows, TEMPLATE_PREVIEW_MAX_ROWS, minimum=0)
-    max_cols = _coerce_preview_bound(max_cols, TEMPLATE_PREVIEW_MAX_COLS, minimum=0)
+    if max_rows in (None, ""):
+        max_rows = max(0, source_rows - start_row + 1)
+    else:
+        max_rows = _coerce_preview_bound(max_rows, TEMPLATE_PREVIEW_MAX_ROWS, minimum=0)
+    if max_cols in (None, ""):
+        max_cols = max(0, source_cols - start_col + 1)
+    else:
+        max_cols = _coerce_preview_bound(max_cols, TEMPLATE_PREVIEW_MAX_COLS, minimum=0)
     if max_rows <= 0 or max_cols <= 0 or start_row > source_rows or start_col > source_cols:
         preview_df = pd.DataFrame()
         preview_df.attrs["_hide_column_names"] = True
@@ -96,10 +102,10 @@ def workbook_sheet_preview_data(
     saved_path="",
     start_row=1,
     start_col=1,
-    max_rows=TEMPLATE_PREVIEW_MAX_ROWS,
-    max_cols=TEMPLATE_PREVIEW_MAX_COLS,
+    max_rows=None,
+    max_cols=None,
 ):
-    """Build preview payload for one worksheet and one bounded range."""
+    """Build preview payload for one worksheet and one optional range."""
     if sheet_name is None or sheet_name == "":
         if not wb.worksheets:
             raise ValueError("workbook has no worksheets")
@@ -149,10 +155,10 @@ def workbook_to_preview_data(
     max_sheets=None,
     start_row=1,
     start_col=1,
-    max_rows=TEMPLATE_PREVIEW_MAX_ROWS,
-    max_cols=TEMPLATE_PREVIEW_MAX_COLS,
+    max_rows=None,
+    max_cols=None,
 ):
-    """Convert an openpyxl workbook to a bounded multi-sheet preview payload."""
+    """Convert an openpyxl workbook to a multi-sheet preview payload."""
     sheets = {}
     worksheets = list(wb.worksheets)
     if max_sheets is None:
@@ -169,7 +175,9 @@ def workbook_to_preview_data(
         "sheet_count": len(worksheets),
         "previewed_sheet_count": len(preview_worksheets),
         "skipped_sheets": skipped_sheets,
-        "preview_truncated": bool(skipped_sheets),
+        "preview_truncated": bool(skipped_sheets or any(
+            df.attrs.get("_preview_limited") for df in sheets.values()
+        )),
         "preview_limit": {
             "max_rows": max_rows,
             "max_cols": max_cols,

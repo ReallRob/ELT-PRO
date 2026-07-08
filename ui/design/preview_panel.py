@@ -2,18 +2,26 @@
 
 import os
 
+import pandas as pd
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QTableView
 
 from table_model import PandasModel
-from template_engine import (
-    workbook_sheet_preview_data,
-    workbook_to_preview_data,
-)
+from template_engine import workbook_sheet_preview_data, workbook_to_preview_data
+
+try:
+    from openpyxl.workbook.workbook import Workbook
+    from openpyxl.worksheet.worksheet import Worksheet
+except ImportError:  # pragma: no cover - openpyxl is bundled for normal app usage.
+    Workbook = None
+    Worksheet = None
 
 PREVIEW_ROW_LIMIT = 5000
 PREVIEW_MODEL_CACHE_LIMIT = 16
 EMPTY_PREVIEW_LABEL = "暂无数据"
+LEGACY_TEMPLATE_PREVIEW_MAX_ROWS = "5000"
+LEGACY_TEMPLATE_PREVIEW_MAX_COLS = "200"
 
 
 def _is_template_preview(value):
@@ -26,6 +34,51 @@ def _is_template_preview(value):
 
 def _is_workbook_entry(value):
     return isinstance(value, dict) and value.get("_wb") is not None
+
+
+def _is_workbook_like(value):
+    if _is_workbook_entry(value):
+        return True
+    if Workbook is not None and isinstance(value, Workbook):
+        return True
+    return Worksheet is not None and isinstance(value, Worksheet)
+
+
+def _workbook_and_sheet_from_value(value):
+    if _is_workbook_entry(value):
+        wb = value.get("_wb")
+        if Worksheet is not None and isinstance(wb, Worksheet):
+            return getattr(wb, "parent", None), wb.title
+        return wb, None
+    if Workbook is not None and isinstance(value, Workbook):
+        return value, None
+    if Worksheet is not None and isinstance(value, Worksheet):
+        return getattr(value, "parent", None), value.title
+    return None, None
+
+
+def _preview_limit_from_params(params, key, legacy_default=None):
+    raw = (params or {}).get(key)
+    text = str(raw or "").strip()
+    if not text or (legacy_default is not None and text == str(legacy_default)):
+        return None
+    try:
+        value = int(text)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _workbook_saved_path(value):
+    if not isinstance(value, dict):
+        return ""
+    meta = value.get("_meta") if isinstance(value.get("_meta"), dict) else {}
+    return str(
+        value.get("_saved_path")
+        or value.get("_template_path")
+        or meta.get("path")
+        or ""
+    )
 
 
 class PreviewPanelMixin:
@@ -116,23 +169,66 @@ class PreviewPanelMixin:
             self.preview_title.setText(f"锁定表【{table_name}】暂无数据")
             self.lbl_shape.setText("(0 行, 0 列)")
 
-    def _node_preview_outputs(self, node):
-        output_keys = getattr(self.ctx, "output_key_map", {}).get(node.node_id, {})
-        rows = []
+    def _node_preview_refs(self, node):
+        node_id = str(getattr(node, "node_id", ""))
+        refs = []
+        seen = set()
+
+        def add_ref(output_id, name=""):
+            output_id = str(output_id or "out_1")
+            if output_id in seen:
+                return
+            seen.add(output_id)
+            refs.append((output_id, str(name or output_id)))
+
         for output in node.params.get("outputs") or []:
-            if not isinstance(output, dict):
+            if isinstance(output, dict):
+                add_ref(output.get("output_id"), output.get("name"))
+        for output in getattr(self.ctx, "raw_node_output_refs", lambda _node_id: [])(node_id):
+            if isinstance(output, dict):
+                add_ref(output.get("output_id"), output.get("name"))
+        for output_id, key in getattr(self.ctx, "output_key_map", {}).get(node_id, {}).items():
+            add_ref(output_id, key)
+        for raw_node_id, output_id in getattr(self.ctx, "raw_data_pool", {}):
+            if raw_node_id == node_id:
+                add_ref(output_id)
+        return refs
+
+    def _node_preview_outputs(self, node):
+        node_id = str(getattr(node, "node_id", ""))
+        output_keys = getattr(self.ctx, "output_key_map", {}).get(node_id, {})
+        data_pool = getattr(self.ctx, "data_pool", {})
+        raw_data_pool = getattr(self.ctx, "raw_data_pool", {})
+        rows = []
+        used_output_ids = set()
+
+        for output_id, fallback_name in self._node_preview_refs(node):
+            raw_key = (node_id, output_id)
+            if raw_key in raw_data_pool and _is_workbook_like(raw_data_pool[raw_key]):
+                rows.append((output_id, fallback_name, raw_data_pool[raw_key]))
+                used_output_ids.add(output_id)
                 continue
-            output_id = str(output.get("output_id") or "out_1")
             key = output_keys.get(output_id)
-            if key and key in self.ctx.data_pool:
+            if key and key in data_pool:
                 rows.append((output_id, key, self.ctx.get_data(key)))
-        if rows:
-            return rows
-        return [
-            (output_id, key, self.ctx.get_data(key))
-            for output_id, key in output_keys.items()
-            if key in self.ctx.data_pool
-        ]
+                used_output_ids.add(output_id)
+                continue
+            if raw_key in raw_data_pool:
+                rows.append((output_id, fallback_name, raw_data_pool[raw_key]))
+                used_output_ids.add(output_id)
+
+        for output_id, key in output_keys.items():
+            if output_id in used_output_ids or key not in data_pool:
+                continue
+            rows.append((output_id, key, self.ctx.get_data(key)))
+            used_output_ids.add(output_id)
+
+        for raw_node_id, output_id in raw_data_pool:
+            if raw_node_id != node_id or output_id in used_output_ids:
+                continue
+            rows.append((output_id, output_id, raw_data_pool[(raw_node_id, output_id)]))
+            used_output_ids.add(output_id)
+        return rows
 
     def _render_node_preview(self, node):
         self.preview_tabs.clear()
@@ -161,7 +257,7 @@ class PreviewPanelMixin:
             self.preview_title.setText(f"跟随节点: 【{node.title}】{suffix}")
             self.preview_title.setStyleSheet("color: #2196F3; font-weight: bold;")
             for _output_id, key, value in outputs:
-                self._add_preview_value(key, value)
+                self._add_preview_value(key, value, node.params)
             return
 
         if node.action_type == "import_template" and self._render_import_template_preview(node):
@@ -175,44 +271,19 @@ class PreviewPanelMixin:
             up_node = edge.source_node
             if hasattr(self, "_is_deleted_qt_object") and self._is_deleted_qt_object(up_node):
                 continue
-            output_map = getattr(self.ctx, "output_key_map", {}).get(up_node.node_id, {})
-            for _output_id, up_name in output_map.items():
-                if up_name and up_name in self.ctx.data_pool:
-                    value = self.ctx.get_data(up_name)
-                    if node.action_type == "left_join" and i == 0:
-                        prefix = "左表"
-                    elif node.action_type == "left_join":
-                        prefix = "右表"
-                    else:
-                        prefix = "来源表"
-                    self._add_preview_value(f"{prefix}: {up_name}", value)
-                    valid_sources += 1
+            for _output_id, up_name, value in self._node_preview_outputs(up_node):
+                if node.action_type == "left_join" and i == 0:
+                    prefix = "左表"
+                elif node.action_type == "left_join":
+                    prefix = "右表"
+                else:
+                    prefix = "来源表"
+                self._add_preview_value(f"{prefix}: {up_name}", value, up_node.params)
+                valid_sources += 1
 
         if valid_sources == 0:
             self.preview_title.setText("源模式失败: 连接的上游尚未产生数据")
             self.lbl_shape.setText("(0 行, 0 列)")
-
-    def _template_preview_payload(self, wb, params):
-        sheet_name = str((params or {}).get("preview_sheet_name") or "").strip()
-        saved_path = (params or {}).get("_saved_path") or (params or {}).get("output_path") or "未保存"
-        if not sheet_name:
-            return workbook_to_preview_data(
-                wb,
-                saved_path,
-                start_row=(params or {}).get("preview_start_row") or 1,
-                start_col=(params or {}).get("preview_start_col") or 1,
-                max_rows=(params or {}).get("preview_max_rows") or PREVIEW_ROW_LIMIT,
-                max_cols=(params or {}).get("preview_max_cols") or 200,
-            )
-        return workbook_sheet_preview_data(
-            wb,
-            sheet_name,
-            saved_path,
-            start_row=(params or {}).get("preview_start_row") or 1,
-            start_col=(params or {}).get("preview_start_col") or 1,
-            max_rows=(params or {}).get("preview_max_rows") or PREVIEW_ROW_LIMIT,
-            max_cols=(params or {}).get("preview_max_cols") or 200,
-        )
 
     def _render_import_template_preview(self, node):
         template_path = str(node.params.get("template_path") or "").strip()
@@ -225,17 +296,63 @@ class PreviewPanelMixin:
         self.lbl_shape.setText("运行加载模板节点后，将使用内存中的工作簿生成预览")
         return True
 
-    def _add_preview_value(self, title, value):
-        if _is_workbook_entry(value):
-            node = self._current_live_node() if hasattr(self, "_current_live_node") else None
-            params = dict(getattr(node, "params", {}) or {})
-            params["_saved_path"] = value.get("_saved_path", "")
-            value = self._template_preview_payload(value.get("_wb"), params)
+    def _workbook_preview_data(self, value, params=None):
+        wb, forced_sheet = _workbook_and_sheet_from_value(value)
+        if wb is None:
+            raise ValueError("Workbook 对象为空，无法生成预览")
+        params = params or {}
+        preview_kwargs = {
+            "start_row": params.get("preview_start_row") or 1,
+            "start_col": params.get("preview_start_col") or 1,
+        }
+        max_rows = _preview_limit_from_params(
+            params,
+            "preview_max_rows",
+            LEGACY_TEMPLATE_PREVIEW_MAX_ROWS,
+        )
+        max_cols = _preview_limit_from_params(
+            params,
+            "preview_max_cols",
+            LEGACY_TEMPLATE_PREVIEW_MAX_COLS,
+        )
+        if max_rows is not None:
+            preview_kwargs["max_rows"] = max_rows
+        if max_cols is not None:
+            preview_kwargs["max_cols"] = max_cols
+        if forced_sheet:
+            return workbook_sheet_preview_data(
+                wb,
+                forced_sheet,
+                _workbook_saved_path(value),
+                **preview_kwargs,
+            )
+        return workbook_to_preview_data(
+            wb,
+            _workbook_saved_path(value),
+            max_sheets=None,
+            **preview_kwargs,
+        )
+
+    def _add_workbook_preview_value(self, title, value, params=None):
+        try:
+            preview = self._workbook_preview_data(value, params)
+        except Exception as exc:
+            self._add_preview_tab(title, pd.DataFrame([{"预览错误": str(exc)}]))
+            return
+        self._add_template_preview_value(preview)
+
+    def _add_template_preview_value(self, value):
+        for sheet_name, df in value.get("sheets", {}).items():
+            self._add_preview_tab(sheet_name, df)
+        if not value.get("sheets"):
+            self.lbl_shape.setText("(0 行, 0 列)")
+
+    def _add_preview_value(self, title, value, params=None):
+        if _is_workbook_like(value):
+            self._add_workbook_preview_value(title, value, params)
+            return
         if _is_template_preview(value):
-            for sheet_name, df in value.get("sheets", {}).items():
-                self._add_preview_tab(sheet_name, df)
-            if not value.get("sheets"):
-                self.lbl_shape.setText("(0 行, 0 列)")
+            self._add_template_preview_value(value)
             return
         self._add_preview_tab(title, value)
 
@@ -246,6 +363,8 @@ class PreviewPanelMixin:
         return f"({rows} 行, {cols} 列{suffix})"
 
     def _add_preview_tab(self, title, df):
+        if not hasattr(df, "shape"):
+            df = pd.DataFrame([{"值": df}])
         table = QTableView()
         table.setProperty("preview_title", title)
         table.setProperty("is_template_preview", bool(getattr(df, "attrs", {}).get("_hide_column_names")))

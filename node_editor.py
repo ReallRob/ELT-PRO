@@ -171,9 +171,17 @@ class EdgeItem(QGraphicsPathItem):
         super().__init__()
         self.source_node = source_node
         self.dest_node = dest_node
+        self.is_stale = False
+        self.stale_reason = ""
         self.setZValue(0)
         self.setFlags(QGraphicsItem.ItemIsSelectable | QGraphicsItem.ItemIsFocusable)
         self.update_position()
+
+    def set_stale(self, stale, reason=""):
+        self.is_stale = bool(stale)
+        self.stale_reason = str(reason or "") if self.is_stale else ""
+        self.setToolTip(self.stale_reason if self.is_stale else "")
+        self.update()
 
     def shape(self):
         path = self.path()
@@ -197,6 +205,9 @@ class EdgeItem(QGraphicsPathItem):
         if self.isSelected():
             line_color = QColor("#f44336")
             line_width = 4
+        elif self.is_stale:
+            line_color = QColor("#EF4444")
+            line_width = 3
         else:
             line_color = QColor("#999999")
             line_width = 2
@@ -208,7 +219,13 @@ class EdgeItem(QGraphicsPathItem):
             painter.drawPath(self.path())
 
         painter.setPen(
-            QPen(line_color, line_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            QPen(
+                line_color,
+                line_width,
+                Qt.DashLine if self.is_stale and not self.isSelected() else Qt.SolidLine,
+                Qt.RoundCap,
+                Qt.RoundJoin,
+            )
         )
         painter.drawPath(self.path())
 

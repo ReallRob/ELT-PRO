@@ -20,6 +20,8 @@ from ui.dialogs.path_remap import PathRemapDialog
 
 class ImportExportUIMixin:
     def _reset_canvas_selection_state(self):
+        if hasattr(self, "_invalidate_single_node_run"):
+            self._invalidate_single_node_run("正在切换工作流，当前单节点运行结果将被忽略")
         self.current_selected_node = None
         if hasattr(self, "config_area") and hasattr(self, "panel_instances"):
             empty = self.panel_instances.get("sys_empty")
