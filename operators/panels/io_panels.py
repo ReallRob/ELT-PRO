@@ -35,6 +35,7 @@ class LoadFilePanel(BaseToolPanel):
             return value
 
     def init_custom_ui(self):
+        self._last_auto_output_name = ""
         card, inner = self._make_card("数据源配置")
         self.custom_layout.addWidget(card)
 
@@ -145,12 +146,24 @@ class LoadFilePanel(BaseToolPanel):
     def auto_update_out_name(self, text):
         if not text:
             return
+        auto_name = ""
         if text == CSV_SHEET_LABEL:
             if self.path_input.text():
-                base_name = os.path.basename(self.path_input.text()).split(".")[0]
-                self.out_input.setText(base_name)
+                auto_name = os.path.basename(self.path_input.text()).split(".")[0]
         else:
-            self.out_input.setText(text)
+            auto_name = str(text).strip()
+        self._set_auto_output_name(auto_name)
+
+    def _set_auto_output_name(self, auto_name):
+        auto_name = str(auto_name or "").strip()
+        if not auto_name or not hasattr(self, "out_input"):
+            return
+        current = self.out_input.text().strip()
+        last_auto = str(getattr(self, "_last_auto_output_name", "") or "").strip()
+        if current and current != last_auto and current != auto_name:
+            return
+        self.out_input.setText(auto_name)
+        self._last_auto_output_name = auto_name
 
     def _load_output_name(self, params):
         explicit = self.out_input.text().strip() if hasattr(self, "out_input") else ""
@@ -177,6 +190,8 @@ class LoadFilePanel(BaseToolPanel):
         return params
 
     def set_custom_params(self, p):
+        saved_output = self._saved_output_for_basic_field(p)
+        saved_output_name = str((saved_output or {}).get("name") or "").strip()
         if "file_path" in p:
             self.path_input.setText(p["file_path"])
             self.update_sheets(p["file_path"])
@@ -186,6 +201,11 @@ class LoadFilePanel(BaseToolPanel):
                 [self.sheet_combo.itemText(i) for i in range(self.sheet_combo.count())],
                 str(p["sheet_name"]),
             )
+        if saved_output_name and hasattr(self, "out_input"):
+            self.out_input.setText(saved_output_name)
+        default_output_name = default_load_output_name(p, "数据源")
+        if saved_output_name and saved_output_name == default_output_name:
+            self._last_auto_output_name = saved_output_name
         if "skiprows" in p:
             self.skip_input.setText(str(p["skiprows"]))
         if "start_col" in p:
@@ -198,6 +218,7 @@ class LoadFilePanel(BaseToolPanel):
             self.nrows_input.setText(str(p["nrows"]))
 
     def clear_custom_ui(self):
+        self._last_auto_output_name = ""
         self.path_input.clear()
         self.sheet_combo.clear()
         self.skip_input.setText("0")
@@ -225,6 +246,11 @@ class ExportNodePanel(BaseToolPanel):
         self.fname_input = QLineEdit("Export_Result.xlsx")
         fl.addRow("导出文件名:", self.fname_input)
 
+        self.export_mode_combo = QComboBox()
+        self.export_mode_combo.addItem("导出为多个 sheet", "multi_sheet")
+        self.export_mode_combo.addItem("合并为一个 sheet", "single_sheet")
+        fl.addRow("导出方式:", self.export_mode_combo)
+
         path_layout = QHBoxLayout()
         self.dir_input = QLineEdit()
         self.dir_input.set_parameter_enabled(False)
@@ -236,7 +262,7 @@ class ExportNodePanel(BaseToolPanel):
         fl.addRow("保存至目录:", path_layout)
         inner.addLayout(fl)
 
-        hint = self._make_hint_label("支持 .xlsx 和 .csv 格式。目录留空则保存至程序根目录。")
+        hint = self._make_hint_label("支持 .xlsx 和 .csv 格式。多个 sheet 模式会自动使用 .xlsx。")
         inner.addWidget(hint)
 
     def browse_dir(self):
@@ -246,6 +272,7 @@ class ExportNodePanel(BaseToolPanel):
 
     def clear_custom_ui(self):
         self.fname_input.setText("Export_Result.xlsx")
+        self.export_mode_combo.setCurrentIndex(0)
         self.dir_input.clear()
 
     def set_custom_params(self, p):
@@ -253,9 +280,13 @@ class ExportNodePanel(BaseToolPanel):
             self.fname_input.setText(p["file_name"])
         if "folder_path" in p:
             self.dir_input.setText(p["folder_path"])
+        mode = str(p.get("export_mode") or "multi_sheet")
+        index = self.export_mode_combo.findData(mode)
+        self.export_mode_combo.setCurrentIndex(index if index >= 0 else 0)
 
     def get_custom_params(self):
         return {
             "file_name": self.fname_input.text().strip(),
             "folder_path": self.dir_input.text().strip(),
+            "export_mode": self.export_mode_combo.currentData() or "multi_sheet",
         }

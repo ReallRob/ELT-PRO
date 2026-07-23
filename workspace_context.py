@@ -49,34 +49,8 @@ class WorkspaceContext(QObject):
         self.data_updated.emit(key)
         return key
 
-    def register_node_outputs(self, node_id, outputs):
-        """Replace all preview outputs for a node without touching its saved params."""
-        if node_id:
-            for old_key in self.output_key_map.get(node_id, {}).values():
-                self.data_pool.pop(old_key, None)
-            self.output_key_map[node_id] = {}
-            self.dedup_map.pop(node_id, None)
-            self.clear_raw_node_outputs(node_id)
-
-        final_keys = []
-        for output in outputs or []:
-            key = self.register_data(
-                output.get("name"),
-                output.get("data"),
-                node_id=node_id,
-                output_id=output.get("output_id") or "out_1",
-            )
-            final_keys.append(key)
-        return final_keys
-
     def get_data(self, key):
         return self.data_pool.get(key)
-
-    def get_node_output_value(self, node_id, output_id="out_1"):
-        key = self.output_key_map.get(node_id, {}).get(output_id or "out_1")
-        if key:
-            return self.data_pool.get(key)
-        return None
 
     def _close_raw_value(self, value):
         if isinstance(value, dict) and value.get("_wb") is not None:
@@ -227,6 +201,7 @@ class WorkspaceContext(QObject):
             "function_spaces": copy.deepcopy(self.function_spaces),
             "runtime_parameters": dict(self.runtime_parameters),
             "parameter_mappings": dict(self.parameter_mappings),
+            "state": {"run_status": "ready"},
             "steps": compiled_steps,
         }
         return self.workflow_config
@@ -250,14 +225,6 @@ class WorkspaceContext(QObject):
         )
         self.engine.start()
 
-    def run_workflow_sync(self, workflow_config, keep_intermediates=True, log_callback=None):
-        """Legacy sync execution is intentionally disabled for design mode.
-
-        Use WorkflowEngine.start() with generation/discard checks so heavy I/O,
-        preview conversion, saving, and user code never run on the UI thread.
-        """
-        raise RuntimeError("设计态不再支持同步运行工作流，请使用后台 WorkflowEngine.start()")
-
     def _discard_current_engine(self):
         engine = self.engine
         self.engine = None
@@ -277,10 +244,6 @@ class WorkspaceContext(QObject):
             self._discarded_engines.remove(engine)
         except ValueError:
             pass
-
-    def discard_current_workflow_run(self):
-        self._run_generation += 1
-        self._discard_current_engine()
 
     def discarded_engine_running(self):
         running = []

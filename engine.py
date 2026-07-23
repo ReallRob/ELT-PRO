@@ -19,6 +19,9 @@ class WorkflowEngine(QThread):
     progress_signal = pyqtSignal(int, int)
     finished_signal = pyqtSignal(bool, object)
 
+    class WorkflowCancelled(RuntimeError):
+        """Raised internally when the current workflow run is stopped."""
+
     def __init__(
         self,
         file_mapping,
@@ -51,9 +54,42 @@ class WorkflowEngine(QThread):
         self.runtime_state = {}
         self.global_code = ""
         self.function_spaces = []
+        self._cancel_requested = False
 
     def log(self, msg):
         self.log_signal.emit(msg)
+
+    def request_cancel(self):
+        self._cancel_requested = True
+        self._set_run_status("stopped")
+        try:
+            self.requestInterruption()
+        except RuntimeError:
+            pass
+
+    def _run_status(self):
+        if not isinstance(self.runtime_state, dict):
+            return ""
+        return str(self.runtime_state.get("run_status") or "").strip().lower()
+
+    def _set_run_status(self, status):
+        if not isinstance(self.runtime_state, dict):
+            self.runtime_state = {}
+        self.runtime_state["run_status"] = str(status or "").strip()
+
+    def is_cancel_requested(self):
+        try:
+            return bool(
+                self._cancel_requested
+                or self.isInterruptionRequested()
+                or self._run_status() == "stopped"
+            )
+        except RuntimeError:
+            return bool(self._cancel_requested or self._run_status() == "stopped")
+
+    def _check_cancelled(self):
+        if self.is_cancel_requested():
+            raise self.WorkflowCancelled("run stopped")
 
     def get_output(self, node_id, output_id="out_1"):
         return self.runtime_store.get_data(node_id, output_id or "out_1")
@@ -122,7 +158,7 @@ class WorkflowEngine(QThread):
         parameters = normalize_runtime_parameters(
             self.workflow_config.get("runtime_parameters", {})
         )
-        mappings = dict(self.workflow_config.get("parameter_mappings", {}) or {})
+        mappings = {}
 
         for step in steps:
             if step.get("action") != "advanced_param_mapping":
@@ -133,7 +169,6 @@ class WorkflowEngine(QThread):
                 parameters.update(typed_params)
             else:
                 parameters.update(normalize_runtime_parameters(params.get("parameters", {})))
-            mappings.update(params.get("parameter_mappings", {}) or {})
         return parameters, mappings
 
     def _build_ref_count(self, steps):
@@ -346,11 +381,11 @@ class WorkflowEngine(QThread):
             return False
         config = params.get("rule_engine_config", {})
         param_count = len(config.get("parameters", []))
-        rule_count = len(config.get("rules", []))
-        self.log(f"    - 已加载参数输入: {param_count} 个参数, {rule_count} 条规则")
+        self.log(f"    - 已加载参数输入: {param_count} 个参数")
         return True
 
     def run(self):
+        cancel_requested_before_start = bool(self._cancel_requested)
         started_at = time.perf_counter()
         try:
             steps = self.workflow_config.get("steps", [])
@@ -360,6 +395,9 @@ class WorkflowEngine(QThread):
             self.runtime_parameters = runtime_parameters
             self.parameter_mappings = parameter_mappings
             self.runtime_state = dict(self.workflow_config.get("state") or {})
+            self._cancel_requested = cancel_requested_before_start
+            self._set_run_status("stopped" if self._cancel_requested else "running")
+            self._check_cancelled()
             self.global_code = str(self.workflow_config.get("global_code") or "")
             self.function_spaces = list(self.workflow_config.get("function_spaces") or [])
 
@@ -370,6 +408,7 @@ class WorkflowEngine(QThread):
             self._dedup_map = {}
             self._output_key_map = {}
             self._output_meta = {}
+            success_node_ids = []
             ref_count = self._build_ref_count(steps)
 
             self.log(f"开始执行工作流: {workflow_name} (共 {total_steps} 步)")
@@ -380,6 +419,7 @@ class WorkflowEngine(QThread):
 
             self.progress_signal.emit(0, total_steps)
             for i, step in enumerate(steps):
+                self._check_cancelled()
                 step_id = step.get("step_id", i + 1)
                 node_id = step.get("node_id")
                 action = step.get("action")
@@ -391,6 +431,7 @@ class WorkflowEngine(QThread):
                 self.log(f"\n  [步骤 {step_id}/{total_steps}] 节点: {action}")
 
                 try:
+                    self._check_cancelled()
                     if self._handle_parameter_action(action, params):
                         self._log_step_profile(
                             action,
@@ -399,6 +440,8 @@ class WorkflowEngine(QThread):
                             0,
                             0,
                         )
+                        if node_id:
+                            success_node_ids.append(node_id)
                         self.progress_signal.emit(i + 1, total_steps)
                         continue
 
@@ -407,6 +450,7 @@ class WorkflowEngine(QThread):
                     inputs = self._inputs_from_params(params)
                     result = self.runtime_store.run_operator(node_id, operator, inputs, params)
                     run_elapsed = time.perf_counter() - run_started
+                    self._check_cancelled()
 
                     log_started = time.perf_counter()
                     self._output_meta[node_id] = [
@@ -445,17 +489,36 @@ class WorkflowEngine(QThread):
                         published_count,
                         released_count,
                     )
+                    if node_id:
+                        success_node_ids.append(node_id)
                     self.progress_signal.emit(i + 1, total_steps)
 
                 except Exception as step_e:
+                    if self.is_cancel_requested():
+                        self._set_run_status("stopped")
+                        self.log(f"\n    - [已停止] 节点运行已停止: {action}")
+                        self._close_workbooks()
+                        self.finished_signal.emit(False, {
+                            "cancelled": True,
+                            "state": self.runtime_state,
+                            "success_node_ids": list(success_node_ids),
+                            "failed_node_id": node_id,
+                        })
+                        return
+                    self._set_run_status("error")
                     err_msg = traceback.format_exc()
                     self.log(
                         f"\n    X [步骤 {step_id}] 节点执行失败:\n原因: {step_e}\n{err_msg}"
                     )
                     self._close_workbooks()
-                    self.finished_signal.emit(False, {})
+                    self.finished_signal.emit(False, {
+                        "success_node_ids": list(success_node_ids),
+                        "failed_node_id": node_id,
+                    })
                     return
 
+            self._check_cancelled()
+            self._set_run_status("done")
             total_elapsed = time.perf_counter() - started_at
             self.log(f"\n成功，所有节点执行完毕。总耗时: {self._format_ms(total_elapsed)}")
             self.log(f"    - [perf] final display_pool outputs={len(display_pool)}")
@@ -465,6 +528,8 @@ class WorkflowEngine(QThread):
                 "output_key_map": self._output_key_map,
                 "output_meta": self._output_meta,
                 "state": self.runtime_state,
+                "success_node_ids": list(success_node_ids),
+                "failed_node_id": "",
             }
             if self.return_raw_outputs:
                 result_payload["raw_data"] = dict(self.runtime_store.data_pool)
@@ -482,7 +547,14 @@ class WorkflowEngine(QThread):
             self._close_workbooks_for_result(keep_returned_raw=self.return_raw_outputs)
             self.finished_signal.emit(True, result_payload)
 
+        except self.WorkflowCancelled:
+            self._set_run_status("stopped")
+            self.log("\n已停止，工作流运行被用户取消。")
+            self._close_workbooks()
+            self.finished_signal.emit(False, {"cancelled": True, "state": self.runtime_state})
+
         except Exception:
+            self._set_run_status("error")
             err_msg = traceback.format_exc()
             self.log(f"\nX 致命错误: 引擎解析崩溃\n{err_msg}")
             self._close_workbooks()

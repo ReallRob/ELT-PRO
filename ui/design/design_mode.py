@@ -48,6 +48,7 @@ class DesignModeWidget(
         self._is_updating_combo = False
         self.hidden_toolbox = set()
         self.hidden_context_menu = set()
+        self.workflow_name = "UI_Draft"
         self.naming_style = "默认"
         self.custom_names = {}
         self.runtime_parameters = {}
@@ -85,11 +86,12 @@ class DesignModeWidget(
 
     def save_design_state(self):
         """保存设计模式状态到配置文件（供 main.py closeEvent 调用）"""
+        if not self.save_workflow_before_close():
+            return False
         self._save_app_settings()
+        return True
 
     def shutdown_for_close(self, timeout_ms=3000):
-        if hasattr(self, "_stop_full_run_timeout_timer"):
-            self._stop_full_run_timeout_timer()
         if hasattr(self, "shutdown_single_node_runtime") and not self.shutdown_single_node_runtime(timeout_ms):
             return False
         if hasattr(self.ctx, "shutdown_for_close") and not self.ctx.shutdown_for_close(timeout_ms):

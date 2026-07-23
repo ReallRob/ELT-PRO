@@ -17,6 +17,12 @@ from PyQt5.QtWidgets import (
 from node_editor import NodeCanvasScene, NodeCanvasView
 from operator_registry import NODE_REGISTRY
 from ui.design.config_pages import make_empty_config_page
+from ui.design.layout_constants import (
+    CONFIG_DOCK_DEFAULT_WIDTH,
+    CONFIG_DOCK_MIN_WIDTH,
+    PREVIEW_DOCK_DEFAULT_HEIGHT,
+    TOOLBOX_DOCK_DEFAULT_WIDTH,
+)
 from ui.design.toolbox import ToolboxWidget
 
 
@@ -136,12 +142,13 @@ def _build_preview_dock(owner):
 def build_config_dialog(owner):
     owner.dock_config = QDockWidget("算子配置")
     owner.dock_config.setObjectName("dock_config")
-    owner.dock_config.setMinimumWidth(320)
+    owner.dock_config.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
     owner.dock_config.setAllowedAreas(Qt.RightDockWidgetArea)
     owner.dock_config.setFeatures(QDockWidget.DockWidgetMovable)
     owner.config_dialog = owner.dock_config
 
     config_container = QWidget()
+    config_container.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
     config_container.setStyleSheet("""
         QWidget { background: #F3F6FA; }
         QStackedWidget { background: #F3F6FA; border: none; }
@@ -151,6 +158,7 @@ def build_config_dialog(owner):
     config_layout.setSpacing(0)
 
     owner.config_area = QStackedWidget()
+    owner.config_area.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
     owner.panel_instances = {}
 
     for action, config in NODE_REGISTRY.items():
@@ -172,6 +180,8 @@ def build_config_dialog(owner):
             panel.code_editor_run_requested_with_spaces.connect(owner.on_code_editor_run_requested_with_spaces)
         elif hasattr(panel, "code_editor_run_requested"):
             panel.code_editor_run_requested.connect(owner.on_code_editor_run_requested)
+        if hasattr(panel, "code_editor_stop_requested"):
+            panel.code_editor_stop_requested.connect(owner.on_code_editor_stop_requested)
         panel.save_requested.connect(owner.on_tool_saved)
         panel.run_requested.connect(owner.on_tool_run_requested)
         owner.config_area.addWidget(panel)
@@ -190,11 +200,13 @@ def build_config_dialog(owner):
     QTimer.singleShot(
         0,
         lambda: owner.dock_main.resizeDocks(
-            [owner.dock_toolbox, owner.dock_config], [240, 360], Qt.Horizontal
+            [owner.dock_toolbox, owner.dock_config],
+            [TOOLBOX_DOCK_DEFAULT_WIDTH, CONFIG_DOCK_DEFAULT_WIDTH],
+            Qt.Horizontal,
         ),
     )
     QTimer.singleShot(
         0,
-        lambda: owner.dock_main.resizeDocks([owner.dock_preview], [220], Qt.Vertical),
+        lambda: owner.dock_main.resizeDocks([owner.dock_preview], [PREVIEW_DOCK_DEFAULT_HEIGHT], Qt.Vertical),
     )
     return owner.dock_config

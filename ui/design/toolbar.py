@@ -1,7 +1,8 @@
 """Top toolbar construction for the design mode."""
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QFrame, QHBoxLayout, QPushButton
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import QFrame, QHBoxLayout, QPushButton, QShortcut
 
 
 BASE_BUTTON_STYLE = """
@@ -77,15 +78,17 @@ def build_design_toolbar(owner):
     toolbar.setSpacing(8)
 
     btn_import = QPushButton("导入工作流")
+    btn_save = QPushButton("保存")
     btn_export = QPushButton("导出工作流")
     btn_clear = QPushButton("清空画布")
     btn_view = QPushButton("视图")
     btn_settings = QPushButton("设置")
     btn_publish = QPushButton("发布信息")
-    for button in [btn_import, btn_export, btn_clear, btn_view, btn_settings, btn_publish]:
+    for button in [btn_import, btn_save, btn_export, btn_clear, btn_view, btn_settings, btn_publish]:
         _style_button(button, NEUTRAL_BUTTON_STYLE)
 
     btn_import.clicked.connect(owner.import_workflow)
+    btn_save.clicked.connect(owner.save_workflow)
     btn_export.clicked.connect(owner.export_workflow)
     btn_clear.clicked.connect(owner.clear_canvas_logic)
     btn_view.clicked.connect(owner._show_view_menu)
@@ -109,6 +112,7 @@ def build_design_toolbar(owner):
     owner.btn_delete_node.clicked.connect(owner.delete_canvas_node)
 
     toolbar.addWidget(btn_import)
+    toolbar.addWidget(btn_save)
     toolbar.addWidget(btn_export)
     toolbar.addWidget(btn_clear)
     toolbar.addWidget(btn_view)
@@ -121,4 +125,7 @@ def build_design_toolbar(owner):
     toolbar.addStretch(1)
     toolbar.addWidget(owner.btn_copy_node)
     toolbar.addWidget(owner.btn_delete_node)
+
+    owner.save_shortcut = QShortcut(QKeySequence.Save, owner)
+    owner.save_shortcut.activated.connect(owner.save_workflow)
     return toolbar

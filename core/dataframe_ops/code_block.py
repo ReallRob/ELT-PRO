@@ -31,9 +31,15 @@ def code_block(
     - wbs: dict of alias -> Workbook
     - use wb.active or wb["SheetName"] when a worksheet object is needed
     - function namespaces such as date_utils / excel_utils when configured
+    - function reference names, such as ``from fun import *`` when the reference is ``fun``
     - pd, np, re, math, datetime, date, timedelta, openpyxl
     - copy, deepcopy, get_column_letter
     - params, mappings, param(), state
+    - should_cancel() / check_cancel() for cooperative stopping
+
+    ``execution_mode="process"`` runs the code in an isolated child process with
+    ``__name__ == "__main__"``. It can create its own QApplication, reads a
+    copy of params/mappings, and does not support in-memory Workbook inputs.
     """
     tables = tables or {}
     workbooks = workbooks or {}

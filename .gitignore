@@ -12,6 +12,13 @@ venv/
 *.log
 *.tmp
 
+# PyInstaller build and release outputs.
+/build/
+/dist/
+/build-rebuild/
+/dist-rebuild/
+/extensions/
+
 # Local workflow/config/data files should not be committed.
 *.json
 *.xlsx

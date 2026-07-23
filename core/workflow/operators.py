@@ -20,7 +20,7 @@ from core.dataframe_ops import (
     cumsum_data,
     describe_data,
     drop_duplicates,
-    export_df,
+    export_tables,
     filter_data,
     get_col_data,
     group_calc,
@@ -392,18 +392,40 @@ class PctChangeOperator(BatchMapOperator):
         )
 
 
-class ExportOperator(SingleTableOperator):
+class ExportOperator(BaseOperator):
     action = "export_df"
     title = "自动导出"
     category = "输入输出"
     output_suffix = "导出"
 
-    def apply_one(self, df, params):
+    def infer_outputs(self, inputs, params):
+        default = "导出记录"
+        if inputs:
+            default = f"{inputs[0].name}_{self.output_suffix}"
+        return [self.single_output(params, default_name=default)]
+
+    def run(self, inputs, params, context):
+        self.validate(inputs, params)
         fname = params.get("file_name", "Export_Result.xlsx")
         folder = str(params.get("folder_path") or "").strip()
         target_path = str(Path(folder) / fname) if folder else str(get_exec_dir() / fname)
-        export_df(df, target_path, get_exec_dir())
-        return df
+        mode = str(params.get("export_mode") or "multi_sheet").strip()
+        entries = [(input_item.name, context.get_input_data(input_item)) for input_item in inputs]
+        _ok, final_path, result_df = export_tables(entries, target_path, get_exec_dir(), mode)
+        mode_text = "合并为一个 sheet" if mode == "single_sheet" else "导出为多个 sheet"
+        saved_outputs = [item for item in (params.get("outputs") or []) if isinstance(item, dict)]
+        output_name = str((saved_outputs[0].get("name") if saved_outputs else "") or "导出记录")
+        return OperatorResult(
+            outputs=[
+                self.single_output(
+                    params,
+                    result_df,
+                    default_name=output_name,
+                    from_input_id=inputs[0].input_id if inputs else "",
+                )
+            ],
+            logs=[f"{mode_text}: {final_path}"],
+        )
 
 
 class CodeBlockOperator(BaseOperator):
@@ -471,9 +493,10 @@ class CodeBlockOperator(BaseOperator):
             log_callback=log_callback,
             execution_mode=params.get("execution_mode", "auto"),
         )
-        if isinstance(params.get("state"), dict):
-            params["state"].clear()
-            params["state"].update(result.state)
+        params_state = params.get("state")
+        if isinstance(params_state, dict) and isinstance(result.state, dict) and result.state is not params_state:
+            params_state.clear()
+            params_state.update(result.state)
         outputs = []
         for index, item in enumerate(result.outputs, start=1):
             saved = configured_outputs[index - 1] if index - 1 < len(configured_outputs) else {}
@@ -496,17 +519,54 @@ class JoinOperator(BinaryOperator):
     category = "表格组合"
     output_suffix = "连接"
 
+    @staticmethod
+    def _key_list(value):
+        if isinstance(value, (list, tuple)):
+            return [str(item).strip() for item in value if str(item or "").strip()]
+        text = str(value or "").strip()
+        return [text] if text else []
+
+    def _join_key_lists(self, params: dict[str, Any]):
+        left_keys = []
+        right_keys = []
+        for row in params.get("join_keys") or []:
+            if not isinstance(row, dict):
+                continue
+            left = str(row.get("left") or row.get("left_key") or row.get("l_key") or "").strip()
+            right = str(row.get("right") or row.get("right_key") or row.get("r_key") or "").strip()
+            if left or right:
+                left_keys.append(left)
+                right_keys.append(right)
+        if not left_keys and not right_keys:
+            left_keys = self._key_list(
+                params.get("l_key")
+                if "l_key" in params
+                else params.get("left_keys") or params.get("left_key")
+            )
+            right_keys = self._key_list(
+                params.get("r_key")
+                if "r_key" in params
+                else params.get("right_keys") or params.get("right_key")
+            )
+        return left_keys, right_keys
+
     def validate(self, inputs: list[OperatorInput], params: dict[str, Any]):
         super().validate(inputs, params)
-        if not params.get("l_key"):
+        left_keys, right_keys = self._join_key_lists(params)
+        if not left_keys:
             raise ValueError("表连接需要左表匹配键")
-        if not params.get("r_key"):
+        if not right_keys:
             raise ValueError("表连接需要右表匹配键")
+        if len(left_keys) != len(right_keys):
+            raise ValueError("左右表匹配键数量必须一致")
+        if any(not key for key in left_keys) or any(not key for key in right_keys):
+            raise ValueError("表连接的每一行匹配键都需要同时填写左右表列")
         if not (params.get("get_cols") or []):
             raise ValueError("表连接需要至少一个右表提取列")
 
     def apply_pair(self, left_df, right_df, params: dict[str, Any]):
         key_type = params.get("key_type") or params.get("col_type", "col_name")
+        left_keys, right_keys = self._join_key_lists(params)
         get_cols = params.get("get_cols") or []
         actual_cols = normalize_columns(right_df, get_cols, key_type)
         col_names = params.get("col_names") or []
@@ -517,8 +577,8 @@ class JoinOperator(BinaryOperator):
         return left_join(
             left_df,
             right_df,
-            params.get("l_key"),
-            params.get("r_key"),
+            left_keys,
+            right_keys,
             get_cols,
             key_type=key_type,
             col_names=final_names,

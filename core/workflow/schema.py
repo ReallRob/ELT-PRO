@@ -372,6 +372,10 @@ def normalize_inputs(action: str, params: dict[str, Any], incoming_refs: list[di
         table_inputs = [item for item in saved_inputs if str(item.get("data_type") or "table") == "table"]
         return _append_unsaved_refs(table_inputs, incoming_refs, used, data_type="table")
 
+    if action == "export_df":
+        table_inputs = [item for item in saved_inputs if str(item.get("data_type") or "table") == "table"]
+        return _append_unsaved_refs(table_inputs, incoming_refs, used, data_type="table")
+
     if action in BINARY_ACTIONS:
         if saved_inputs:
             merged = [item for item in saved_inputs if str(item.get("data_type") or "table") == "table"]

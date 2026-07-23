@@ -82,7 +82,7 @@ def calc_code(
     parameter_mappings=None,
     timeout_seconds=DEFAULT_CODE_TIMEOUT_SECONDS,
 ):
-    """Run explicit pandas code with df as the current table, with timeout protection."""
+    """Run explicit pandas code with df as the current table."""
     result = run_dataframe_code(
         {"df": df},
         code,

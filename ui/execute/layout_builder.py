@@ -8,7 +8,7 @@ from PyQt5.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
-    QTableView,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -125,16 +125,18 @@ def _build_preview_panel(owner):
     preview_header.addWidget(owner.preview_title, stretch=1)
     preview_header.addWidget(owner.btn_export_preview)
 
-    owner.result_table = QTableView()
-    owner.result_table.setStyleSheet(
-        "QTableView { border: 1px solid #eee; gridline-color: #f0f0f0; } "
-        "QHeaderView::section { background-color: #E1F5FE; font-weight: bold; "
-        "border: 1px solid #ddd; padding: 3px; font-size: 11px; }"
-    )
-    owner.result_table.setAlternatingRowColors(True)
+    owner.result_table = None
+    owner.result_preview_tabs = QTabWidget()
+    owner.result_preview_tabs.setStyleSheet("""
+        QTabWidget::pane { border: 1px solid #eee; background: white; }
+        QTabBar::tab { background: #f5f5f5; border: 1px solid #ddd; padding: 4px 10px;
+            border-top-left-radius: 3px; border-top-right-radius: 3px; margin-right: 1px; font-size: 11px; }
+        QTabBar::tab:selected { background: #E1F5FE; color: #0277BD; border-bottom: none; }
+    """)
+    owner.result_preview_tabs.currentChanged.connect(owner._on_preview_tab_changed)
 
     preview_layout.addLayout(preview_header)
-    preview_layout.addWidget(owner.result_table)
+    preview_layout.addWidget(owner.result_preview_tabs)
     return preview_panel
 
 

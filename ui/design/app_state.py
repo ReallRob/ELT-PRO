@@ -5,8 +5,9 @@ import json
 from PyQt5.QtCore import QByteArray, Qt
 
 from core.app_paths import get_exec_dir, get_workspace_config_path
+from ui.design.layout_constants import CONFIG_DOCK_MIN_WIDTH
 
-DOCK_LAYOUT_VERSION = 3
+DOCK_LAYOUT_VERSION = 4
 
 
 def workspace_root():
@@ -42,7 +43,6 @@ def collect_design_state(widget):
         "hidden_toolbox": list(widget.hidden_toolbox),
         "hidden_context_menu": list(widget.hidden_context_menu),
         "runtime_parameters": widget.runtime_parameters,
-        "parameter_mappings": widget.parameter_mappings,
         "global_code": getattr(widget, "global_code", ""),
         "function_spaces": getattr(widget, "function_spaces", []),
         "crpa": getattr(widget, "crpa_metadata", {}),
@@ -62,7 +62,7 @@ def apply_design_state(widget, state):
     widget.hidden_toolbox = set(state.get("hidden_toolbox", []))
     widget.hidden_context_menu = set(state.get("hidden_context_menu", []))
     widget.runtime_parameters = state.get("runtime_parameters", {})
-    widget.parameter_mappings = state.get("parameter_mappings", {})
+    widget.parameter_mappings = {}
     widget.global_code = str(state.get("global_code") or "")
     widget.function_spaces = state.get("function_spaces") or []
     widget.crpa_metadata = state.get("crpa", {})
@@ -83,6 +83,7 @@ def apply_design_state(widget, state):
             pass
 
     if hasattr(widget, "dock_config"):
+        widget.dock_config.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
         if widget.dock_config.isFloating():
             widget.dock_config.setFloating(False)
         area = widget.dock_main.dockWidgetArea(widget.dock_config)

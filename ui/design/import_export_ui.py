@@ -67,29 +67,75 @@ class ImportExportUIMixin:
                 self.status_label.setText(f"自动加载工作流失败: {exc}")
 
     def export_workflow(self):
+        suggested_name = os.path.basename(
+            getattr(self, "_last_workflow_path", "") or "my_workflow.json"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self, "保存工作流模板", suggested_name, "JSON (*.json)"
+        )
+        if not path:
+            return False
+        return self._save_workflow_to_path(path)
+
+    def save_workflow(self):
+        """Save to the loaded JSON, falling back to Save As for a new workflow."""
+        path = getattr(self, "_last_workflow_path", "")
+        if not path:
+            return self.export_workflow()
+        return self._save_workflow_to_path(path)
+
+    def save_workflow_before_close(self):
+        """Write the active workflow back before closing without showing success UI."""
+        path = getattr(self, "_last_workflow_path", "")
+        if not path:
+            return True
+        return self._save_workflow_to_path(path, show_feedback=False)
+
+    def _build_workflow_config_for_save(self):
         self.save_current_node_draft()
         self._sync_runtime_parameters()
         nodes = [item for item in self.canvas_scene.items() if isinstance(item, NodeItem)]
         config = self.ctx.build_workflow_logic(nodes)
 
         if not config:
-            QMessageBox.warning(self, "错误", "无法导出：可能存在异常连线结构。")
-            return
+            if nodes:
+                raise ValueError("无法保存：可能存在异常连线结构。")
+            config = {
+                "workflow_name": getattr(self, "workflow_name", "UI_Draft"),
+                "global_code": getattr(self, "global_code", ""),
+                "function_spaces": getattr(self, "function_spaces", []),
+                "runtime_parameters": getattr(self, "runtime_parameters", {}),
+                "parameter_mappings": getattr(self, "parameter_mappings", {}),
+                "state": {"run_status": "ready"},
+                "steps": [],
+            }
+            self.ctx.workflow_config = config
+
+        config["workflow_name"] = getattr(
+            self, "workflow_name", config.get("workflow_name", "UI_Draft")
+        )
 
         attach_publish_metadata(
             config,
             getattr(self, "crpa_metadata", {}),
             getattr(self, "run_manifest", {}),
         )
+        return config
 
-        path, _ = QFileDialog.getSaveFileName(
-            self, "保存工作流模板", "my_workflow.json", "JSON (*.json)"
-        )
-        if path:
+    def _save_workflow_to_path(self, path, show_feedback=True):
+        try:
+            config = self._build_workflow_config_for_save()
             save_workflow_file(path, config)
             self._last_workflow_path = path
             self._save_app_settings()
+        except Exception as exc:
+            if show_feedback:
+                QMessageBox.critical(self, "保存失败", f"无法写回工作流文件：{exc}")
+            return False
+
+        if show_feedback:
             QMessageBox.information(self, "成功", "工作流模板已保存。")
+        return True
 
     def import_workflow(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -97,7 +143,6 @@ class ImportExportUIMixin:
         )
         if not path:
             return
-        self._last_workflow_path = path
         try:
             workflow = load_workflow_file(path)
             restore_runtime_metadata(self, workflow)
@@ -118,6 +163,8 @@ class ImportExportUIMixin:
             self.ctx.clear_context()
             restore_steps_to_scene(steps, self.canvas_scene)
             self._sync_runtime_parameters()
+            self._last_workflow_path = path
+            self._save_app_settings()
 
             QTimer.singleShot(
                 0,
@@ -127,7 +174,6 @@ class ImportExportUIMixin:
             )
 
             QMessageBox.information(self, "导入成功", "工作流模板装载完毕。")
-            self.run_full_workflow()
         except Exception as exc:
             QMessageBox.critical(self, "错误", f"读取失败: {exc}")
 

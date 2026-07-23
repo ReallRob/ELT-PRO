@@ -1,6 +1,7 @@
 """Workflow file helpers for the design mode."""
 
 import json
+import base64
 import os
 
 from node_editor import EdgeItem, NodeItem
@@ -8,10 +9,50 @@ from core.manifest_builder import attach_run_manifest
 from core.workflow.schema import migrate_workflow_config, operation_display_name
 from operator_registry import NODE_REGISTRY, get_operator_title
 
+WORKFLOW_FILE_FORMAT = "elt_pro_workflow"
+WORKFLOW_ENCODING_BASE64 = "base64"
+
+
+def _decode_workflow_payload(raw_data):
+    if not isinstance(raw_data, dict):
+        return raw_data
+    if raw_data.get("format") != WORKFLOW_FILE_FORMAT:
+        return raw_data
+    if raw_data.get("encoding") != WORKFLOW_ENCODING_BASE64:
+        return raw_data
+    payload = raw_data.get("payload")
+    if not isinstance(payload, str) or not payload.strip():
+        raise ValueError("工作流文件缺少 Base64 payload")
+    try:
+        decoded = base64.b64decode(payload.encode("ascii"), validate=True).decode("utf-8")
+        return json.loads(decoded)
+    except Exception as exc:
+        raise ValueError("工作流文件 Base64 内容无效或已损坏") from exc
+
+
+def _encode_workflow_payload(workflow):
+    text = json.dumps(workflow, ensure_ascii=False, indent=4)
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return {
+        "format": WORKFLOW_FILE_FORMAT,
+        "encoding": WORKFLOW_ENCODING_BASE64,
+        "payload": payload,
+    }
+
+
+def read_workflow_json(path):
+    with open(path, "r", encoding="utf-8") as f:
+        raw_data = json.load(f)
+    return _decode_workflow_payload(raw_data)
+
+
+def write_workflow_json(path, workflow):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(_encode_workflow_payload(workflow), f, ensure_ascii=False, indent=4)
+
 
 def load_workflow_file(path):
-    with open(path, "r", encoding="utf-8") as f:
-        workflow = json.load(f)
+    workflow = read_workflow_json(path)
     workflow = migrate_workflow_config(workflow)
     validate_workflow_config(workflow)
     return workflow
@@ -50,8 +91,7 @@ def validate_workflow_config(workflow):
 
 def save_workflow_file(path, config):
     config = migrate_workflow_config(config)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=4)
+    write_workflow_json(path, config)
 
 
 def find_missing_load_files(steps):
@@ -81,8 +121,9 @@ def apply_file_mapping(steps, mapping):
 
 
 def restore_runtime_metadata(widget, workflow):
+    widget.workflow_name = str(workflow.get("workflow_name") or "UI_Draft")
     widget.runtime_parameters = workflow.get("runtime_parameters", {})
-    widget.parameter_mappings = workflow.get("parameter_mappings", {})
+    widget.parameter_mappings = {}
     widget.global_code = str(workflow.get("global_code") or "")
     widget.function_spaces = workflow.get("function_spaces") or []
     widget.crpa_metadata = workflow.get("crpa", {})

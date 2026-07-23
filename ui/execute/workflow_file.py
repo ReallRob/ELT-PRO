@@ -1,13 +1,12 @@
 """Workflow file loading and data-source remapping for execute mode."""
 
-import json
 import os
 
 from PyQt5.QtWidgets import QFileDialog, QMessageBox, QDialog
 
 from ui.dialogs.data_source_mapping import DataSourceMappingDialog
 from ui.execute.styles import RUN_BUTTON_ACTIVE_STYLE
-from ui.design.workflow_io import validate_workflow_config
+from ui.design.workflow_io import read_workflow_json, validate_workflow_config, write_workflow_json
 from core.workflow.schema import migrate_workflow_config, step_display_name
 
 
@@ -33,9 +32,8 @@ class ExecuteWorkflowFileMixin:
         if not self.workflow_config:
             return
         params = self.workflow_config.get("runtime_parameters", {})
-        mappings = self.workflow_config.get("parameter_mappings", {})
         self.log_print(
-            f"[系统] 运行参数: {len(params)} 个，参数映射: {len(mappings)} 组"
+            f"[系统] 运行参数: {len(params)} 个"
         )
 
     def save_config_to_json(self):
@@ -60,8 +58,7 @@ class ExecuteWorkflowFileMixin:
                 if path in changed_paths:
                     resource["path"] = changed_paths[path]
 
-            with open(self.current_workflow_path, "w", encoding="utf-8") as f:
-                json.dump(self.workflow_config, f, ensure_ascii=False, indent=4)
+            write_workflow_json(self.current_workflow_path, self.workflow_config)
 
             self.log_print(
                 f"[系统] 路径配置已永久保存至：{os.path.basename(self.current_workflow_path)}"
@@ -85,8 +82,7 @@ class ExecuteWorkflowFileMixin:
             self.log_print(f"[错误] 工作流文件丢失，无法加载: {file_path}")
             return
 
-        with open(file_path, "r", encoding="utf-8") as f:
-            self.workflow_config = json.load(f)
+        self.workflow_config = read_workflow_json(file_path)
         self.workflow_config = migrate_workflow_config(self.workflow_config)
         validate_workflow_config(self.workflow_config)
 
@@ -130,6 +126,11 @@ class ExecuteWorkflowFileMixin:
         self.progress_bar.setFormat("%v / %m 步")
         self.lbl_status.setText("等待执行...")
         self.btn_export_preview.hide()
+        self.current_preview_table = None
+        tabs = getattr(self, "result_preview_tabs", None)
+        if tabs is not None:
+            tabs.clear()
+        self.result_table = None
 
     def _render_workflow_info_panel(self):
         wf_name = self.workflow_config.get("workflow_name", "未命名")

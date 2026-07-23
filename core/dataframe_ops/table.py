@@ -7,6 +7,22 @@ from core.dataframe_ops.columns import flatten_dataframe_columns
 from core.dataframe_ops.columns import normalize_columns
 
 
+def _as_key_list(value):
+    if isinstance(value, list):
+        return [item for item in value if str(item or "").strip()]
+    if isinstance(value, tuple):
+        return [item for item in value if str(item or "").strip()]
+    return [value] if str(value or "").strip() else []
+
+
+def _unique_columns(columns):
+    result = []
+    for column in columns or []:
+        if column not in result:
+            result.append(column)
+    return result
+
+
 def left_join(
     df1,
     df2,
@@ -19,29 +35,37 @@ def left_join(
     mapping_dict=None,
 ):
     df2_work = df2.copy() if mapping_dict else df2
-    left_keys = normalize_columns(df1, [left_key], key_type)
-    right_keys = normalize_columns(df2_work, [right_key], key_type)
+    left_key_refs = _as_key_list(left_key)
+    right_key_refs = _as_key_list(right_key)
+    if not left_key_refs:
+        raise ValueError("表连接需要左表匹配键")
+    if not right_key_refs:
+        raise ValueError("表连接需要右表匹配键")
+    if len(left_key_refs) != len(right_key_refs):
+        raise ValueError("左右表匹配键数量必须一致")
+    left_keys = normalize_columns(df1, left_key_refs, key_type)
+    right_keys = normalize_columns(df2_work, right_key_refs, key_type)
     get_col_list = normalize_columns(df2_work, get_col, key_type)
-    if not left_keys:
+    if len(left_keys) != len(left_key_refs):
         raise ValueError(f"左表关联键不存在: {left_key}")
-    if not right_keys:
+    if len(right_keys) != len(right_key_refs):
         raise ValueError(f"右表关联键不存在: {right_key}")
     if get_col and not get_col_list:
         raise ValueError(f"右表提取列不存在: {get_col}")
-    left_key_col = left_keys[0]
-    right_key_col = right_keys[0]
 
-    actual_right_key = right_key_col
+    actual_right_keys = list(right_keys)
     if mapping_dict:
+        right_key_col = right_keys[0]
         tmp_col = f"__v_join_{right_key_col}__"
         df2_work[tmp_col] = df2_work[right_key_col].map(mapping_dict).fillna(df2_work[right_key_col])
-        actual_right_key = tmp_col
+        actual_right_keys[0] = tmp_col
 
     dup_suffix = "_dup_drop_me"
+    right_merge_cols = _unique_columns(actual_right_keys + get_col_list)
     result = df1.merge(
-        df2_work[[actual_right_key] + get_col_list],
-        left_on=left_key_col,
-        right_on=actual_right_key,
+        df2_work[right_merge_cols],
+        left_on=left_keys,
+        right_on=actual_right_keys,
         how="left",
         suffixes=("", dup_suffix),
     )
@@ -50,8 +74,13 @@ def left_join(
     if cols_to_drop:
         result = result.drop(columns=cols_to_drop)
 
-    if left_key_col != actual_right_key and actual_right_key in result.columns:
-        result = result.drop(columns=[actual_right_key])
+    merge_key_drops = [
+        right_col
+        for left_col, right_col in zip(left_keys, actual_right_keys)
+        if left_col != right_col and right_col in result.columns
+    ]
+    if merge_key_drops:
+        result = result.drop(columns=_unique_columns(merge_key_drops))
 
     if fill_value is not None:
         existing_cols = [col for col in get_col_list if col in result.columns]

@@ -3,7 +3,12 @@
 import os
 from pathlib import Path
 
-from core.parameters.mapping_schema import normalize_file_filters
+from core.parameters.mapping_schema import (
+    normalize_file_filters,
+    normalize_list_item_limits,
+    normalize_parameter_layout,
+    normalize_select_options,
+)
 
 from core.workflow.schema import step_display_name
 
@@ -16,6 +21,8 @@ _PARAM_TYPE_MAP = {
     "string": "text",
     "str": "text",
     "text": "text",
+    "password": "password",
+    "secret": "password",
     "number": "number",
     "numeric": "number",
     "int": "number",
@@ -26,6 +33,15 @@ _PARAM_TYPE_MAP = {
     "boolean": "bool",
     "file": "file",
     "folder": "folder",
+    "array": "list",
+    "list": "list",
+    "object": "key_value",
+    "key_value": "key_value",
+    "keyvalue": "key_value",
+    "select": "select",
+    "choice": "select",
+    "dropdown": "select",
+    "enum": "select",
 }
 
 
@@ -120,17 +136,26 @@ def _iter_parameter_rows(step):
     for item in config.get("parameters", []) or []:
         yield {
             "fieldName": item.get("fieldName", ""),
+            "label": item.get("label") or item.get("fieldName", ""),
             "dataType": item.get("dataType", "String"),
             "input": item.get("input", item.get("value", "")),
+            "tip": item.get("tip", ""),
+            "required": item.get("required", True),
             "filters": item.get("filters"),
+            "options": item.get("options"),
+            "initial_count": item.get("initial_count"),
+            "max_items": item.get("max_items"),
         }
 
     typed = params.get("typed_parameters") or {}
     for key, value in typed.items():
         yield {
             "fieldName": key,
+            "label": key,
             "dataType": type(value).__name__,
             "input": value,
+            "tip": "",
+            "required": True,
         }
 
 
@@ -141,6 +166,7 @@ def build_run_manifest(workflow_config, existing_manifest=None):
     file_resources = []
     data_sources = []
     parameters = []
+    parameter_layout = []
     path_to_key = {}
     param_seen = set()
     file_counter = 1
@@ -230,26 +256,41 @@ def build_run_manifest(workflow_config, existing_manifest=None):
             )
 
         if action == "advanced_param_mapping":
-            for row in _iter_parameter_rows(step):
+            parameter_rows = list(_iter_parameter_rows(step))
+            for row in parameter_rows:
                 name = str(row.get("fieldName") or "").strip()
                 if not name or name in param_seen:
                     continue
                 param_seen.add(name)
                 item = {
                     "key": name,
-                    "label": name,
+                    "label": row.get("label") or name,
                     "type": _parameter_type(row.get("dataType")),
                     "default": row.get("input", ""),
-                    "required": True,
+                    "required": bool(row.get("required", True)),
                 }
+                if row.get("tip"):
+                    item["tip"] = row.get("tip")
                 if item["type"] == "file":
                     item["filters"] = normalize_file_filters(row.get("filters"))
+                if item["type"] == "select":
+                    item["options"] = normalize_select_options(row.get("options"))
+                if item["type"] in {"list", "key_value"}:
+                    initial_count, max_items = normalize_list_item_limits(
+                        row.get("initial_count"), row.get("max_items")
+                    )
+                    item["initial_count"] = initial_count
+                    item["max_items"] = max_items
                 parameters.append(item)
+            parameter_layout.extend(
+                normalize_parameter_layout(params.get("parameter_layout"), parameter_rows)
+            )
 
     return {
         "file_resources": file_resources,
         "data_sources": data_sources,
         "parameters": parameters,
+        "parameter_layout": parameter_layout,
     }
 
 

@@ -681,44 +681,6 @@ def apply_template_insert_payload(wb, payload):
     )
 
 
-def apply_template_cell_edits(wb, edits):
-    """Apply explicit cell value edits to an openpyxl workbook."""
-    if openpyxl is None:
-        raise ImportError("缺少 openpyxl 依赖，请执行: pip install openpyxl")
-    applied = []
-    for index, edit in enumerate(edits or [], start=1):
-        if not isinstance(edit, dict):
-            continue
-        sheet_name = str(edit.get("sheet_name") or "").strip()
-        if not sheet_name:
-            sheet_name = wb.sheetnames[0] if wb.sheetnames else ""
-        if sheet_name not in wb.sheetnames:
-            raise ValueError(f"单元格编辑第 {index} 条失败：工作表 [{sheet_name}] 不存在")
-        ws = wb[sheet_name]
-        row_expr = edit.get("row", edit.get("row_index", ""))
-        col_expr = edit.get("col", edit.get("col_index", ""))
-        if _is_blank(row_expr) or _is_blank(col_expr):
-            continue
-        max_row = ws.max_row or 1
-        max_col = ws.max_column or 1
-        row = _eval_position(row_expr, max_row, max_col, f"单元格编辑第 {index} 条行")
-        col = _eval_position(
-            col_expr,
-            max_row,
-            max_col,
-            f"单元格编辑第 {index} 条列",
-            allow_column_letters=True,
-        )
-        if row < 1 or col < 1:
-            raise ValueError(f"单元格编辑第 {index} 条失败：行列必须大于 0")
-        value = edit.get("value", "")
-        if value is None:
-            value = ""
-        ws.cell(row=row, column=col).value = value
-        applied.append({"sheet_name": sheet_name, "row": row, "col": col, "value": value})
-    return applied
-
-
 def insert_into_template(
     wb,
     df,

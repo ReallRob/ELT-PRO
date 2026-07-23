@@ -1,9 +1,12 @@
 """DataFrame input/output operators."""
 
+import csv
 import os
 from pathlib import Path
 
 import pandas as pd
+
+from core.dataframe_ops.columns import stringify_column_name
 
 CSV_SHEET_LABEL = "CSV (无工作表)"
 
@@ -107,14 +110,48 @@ def read_source_file(
     return df
 
 
+def _text_cell_value(value):
+    if value is None:
+        return ""
+    try:
+        if bool(pd.isna(value)):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    if not isinstance(value, bool):
+        is_integer = getattr(value, "is_integer", None)
+        if callable(is_integer):
+            try:
+                if is_integer():
+                    return str(int(value))
+                return format(value, "f").rstrip("0").rstrip(".")
+            except (OverflowError, TypeError, ValueError):
+                pass
+    return str(value)
+
+
+def _text_dataframe(df):
+    if df is None:
+        return pd.DataFrame()
+    result = df.copy()
+    result.columns = [stringify_column_name(column) for column in result.columns]
+    return result.apply(lambda column: column.map(_text_cell_value))
+
+
 def export_df(df, target_path, default_dir):
+    """Export one table. Values are written as text by default."""
     save_p = Path(target_path)
 
     def write_file(path):
         if str(path).lower().endswith(".csv"):
-            df.to_csv(path, index=False, encoding="utf-8-sig")
+            _text_dataframe(df).to_csv(
+                path,
+                index=False,
+                encoding="utf-8-sig",
+                quoting=csv.QUOTE_ALL,
+            )
         else:
-            df.to_excel(path, index=False)
+            _text_dataframe(df).to_excel(path, index=False)
 
     if save_p.parent.exists():
         try:
@@ -135,3 +172,82 @@ def export_df(df, target_path, default_dir):
             f"原路径: {target_path}\n降级路径: {fallback_path}\n原因: {exc}"
         ) from exc
     return False, str(fallback_path)
+
+
+def _safe_sheet_name(name, used_names):
+    text = str(name or "Sheet").strip() or "Sheet"
+    for char in '[]:*?/\\':
+        text = text.replace(char, "_")
+    text = text[:31] or "Sheet"
+    base = text
+    index = 2
+    while text in used_names:
+        suffix = f"_{index}"
+        text = f"{base[:31 - len(suffix)]}{suffix}"
+        index += 1
+    used_names.add(text)
+    return text
+
+
+def _xlsx_target_path(target_path):
+    path = Path(target_path)
+    if path.suffix.lower() != ".xlsx":
+        name = path.stem or "自动导出结果"
+        path = path.with_name(f"{name}.xlsx")
+    return path
+
+
+def export_tables(tables, target_path, default_dir, mode="multi_sheet"):
+    entries = [(str(name or f"表{index}"), df) for index, (name, df) in enumerate(tables or [], start=1)]
+    if not entries:
+        raise ValueError("导出失败: 没有可导出的表")
+    mode = str(mode or "multi_sheet").strip()
+    if mode not in {"multi_sheet", "single_sheet"}:
+        mode = "multi_sheet"
+    save_p = _xlsx_target_path(target_path) if mode == "multi_sheet" else Path(target_path)
+
+    def write_file(path):
+        if mode == "single_sheet":
+            merged = pd.concat([df for _name, df in entries], ignore_index=True, sort=False)
+            if str(path).lower().endswith(".csv"):
+                _text_dataframe(merged).to_csv(
+                    path,
+                    index=False,
+                    encoding="utf-8-sig",
+                    quoting=csv.QUOTE_ALL,
+                )
+            else:
+                _text_dataframe(merged).to_excel(path, index=False)
+            return merged
+
+        used_names = set()
+        with pd.ExcelWriter(path) as writer:
+            for name, df in entries:
+                _text_dataframe(df).to_excel(
+                    writer,
+                    sheet_name=_safe_sheet_name(name, used_names),
+                    index=False,
+                )
+        return entries[0][1]
+
+    if save_p.parent.exists():
+        try:
+            result = write_file(save_p)
+        except Exception as exc:
+            raise RuntimeError(f"导出失败: {save_p}\n原因: {exc}") from exc
+        return True, str(save_p), result
+
+    fname = save_p.name if save_p.name else "自动导出结果.xlsx"
+    if mode == "multi_sheet" and not fname.lower().endswith(".xlsx"):
+        fname = f"{Path(fname).stem or '自动导出结果'}.xlsx"
+    elif mode != "multi_sheet" and not fname.endswith((".xlsx", ".csv")):
+        fname += ".xlsx"
+    fallback_path = Path(default_dir) / fname
+    try:
+        result = write_file(fallback_path)
+    except Exception as exc:
+        raise RuntimeError(
+            f"目标目录不存在，已尝试降级到默认目录但仍导出失败。\n"
+            f"原路径: {save_p}\n降级路径: {fallback_path}\n原因: {exc}"
+        ) from exc
+    return False, str(fallback_path), result

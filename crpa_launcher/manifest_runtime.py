@@ -7,12 +7,12 @@ from pathlib import Path
 
 from core.manifest_builder import attach_run_manifest
 from core.workflow.schema import migrate_workflow_config
+from ui.design.workflow_io import read_workflow_json, write_workflow_json
 from core.parameters.mapping_schema import build_rule_engine_config, coerce_parameter_rows
 
 
 def load_workflow_json(path):
-    with open(path, "r", encoding="utf-8") as f:
-        workflow = json.load(f)
+    workflow = read_workflow_json(path)
     workflow = migrate_workflow_config(workflow)
     if "run_manifest" not in workflow:
         attach_run_manifest(workflow, workflow.get("crpa"))
@@ -23,8 +23,7 @@ def load_workflow_json(path):
 
 def save_workflow_json(path, workflow):
     workflow = migrate_workflow_config(workflow)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(workflow, f, ensure_ascii=False, indent=4)
+    write_workflow_json(path, workflow)
 
 
 def file_dialog_filter(resource):
@@ -70,6 +69,34 @@ def load_excel_sheet_names(path):
 
 def _coerce_param_value(value, param_type):
     text = "" if value is None else str(value).strip()
+    if param_type == "list":
+        if isinstance(value, list):
+            return value
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+        return [
+            part.strip()
+            for part in text.replace("，", ",").replace("；", ";").replace(";", ",").split(",")
+            if part.strip()
+        ]
+    if param_type in {"key_value", "object", "map"}:
+        if isinstance(value, dict):
+            return value
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+        return value
     if param_type == "number":
         try:
             if "." in text:
@@ -80,6 +107,14 @@ def _coerce_param_value(value, param_type):
     if param_type == "bool":
         return text.lower() in {"1", "true", "yes", "y", "是"}
     return text
+
+
+def _format_parameter_input_value(value):
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, tuple, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return "" if value is None else str(value)
 
 
 def _update_parameter_steps(workflow, parameter_values):
@@ -95,28 +130,34 @@ def _update_parameter_steps(workflow, parameter_values):
                 rows.append(
                     {
                         "fieldName": item.get("fieldName", ""),
+                        "label": item.get("label") or item.get("fieldName", ""),
                         "dataType": item.get("dataType", "String"),
                         "input": item.get("input", ""),
+                        "tip": item.get("tip", ""),
+                        "required": item.get("required", True),
                         "filters": item.get("filters"),
+                        "options": item.get("options"),
+                        "initial_count": item.get("initial_count"),
+                        "max_items": item.get("max_items"),
                         "rules": [],
                     }
                 )
         if not rows:
             rows = [
-                {"fieldName": key, "dataType": "String", "input": "", "rules": []}
+                {"fieldName": key, "label": key, "dataType": "String", "input": ""}
                 for key in parameter_values
             ]
         for row in rows:
             name = row.get("fieldName")
             if name in parameter_values:
-                row["input"] = str(parameter_values[name])
+                row["input"] = _format_parameter_input_value(parameter_values[name])
         coerced = coerce_parameter_rows(rows)
         config = build_rule_engine_config(coerced)
         runtime_payload = config["runtime_payload"]
         params["advanced_parameters"] = coerced
         params["parameters"] = runtime_payload["raw_parameters"]
         params["typed_parameters"] = runtime_payload["runtime_parameters"]
-        params["parameter_mappings"] = runtime_payload["parameter_mappings"]
+        params.pop("parameter_mappings", None)
         params["rule_engine_config"] = config
 
 
@@ -203,6 +244,7 @@ def build_runtime_workflow(base_workflow, file_paths, data_sources, parameters):
         for key, value in [(item.get("key"), parameters.get(item.get("key"), item.get("default", "")))]
         if key
     }
+    workflow["state"] = {"run_status": "ready"}
     return workflow
 
 

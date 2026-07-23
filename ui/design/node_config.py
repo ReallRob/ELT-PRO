@@ -7,7 +7,7 @@ try:
 except ImportError:  # pragma: no cover - depends on PyQt packaging
     sip = None
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -19,7 +19,6 @@ from PyQt5.QtWidgets import (
 
 from node_editor import NodeItem
 from core.workflow.schema import operation_display_name, normalize_action_params, normalize_output_refs
-from core.workflow.timeouts import workflow_code_timeout_ms
 from parameter_resolver import normalize_runtime_parameters
 from engine import WorkflowEngine
 from ui.design.settings_dialog import SettingsDialog
@@ -99,11 +98,21 @@ class NodeConfigMixin:
         """Return saved outputs only; operator titles are never data tables."""
         if source_node is None or self._is_deleted_qt_object(source_node):
             return []
-        return normalize_output_refs(
+        refs = normalize_output_refs(
             source_node.node_id,
             getattr(source_node, "params", {}) or {},
             getattr(source_node, "action_type", ""),
         )
+        output_keys = getattr(self.ctx, "output_key_map", {}).get(source_node.node_id, {})
+        enriched = []
+        for ref in refs:
+            item = copy.deepcopy(ref)
+            output_id = str(item.get("source_output_id") or "out_1")
+            data_key = output_keys.get(output_id)
+            if data_key:
+                item["data_key"] = str(data_key)
+            enriched.append(item)
+        return enriched
 
     def _source_output_name(self, source_node):
         refs = self._source_output_refs(source_node)
@@ -192,13 +201,14 @@ class NodeConfigMixin:
     def on_code_editor_saved(self, node_id, code, global_code):
         self.on_code_editor_saved_with_spaces(node_id, code, global_code, None)
 
-    def on_code_editor_saved_with_spaces(self, node_id, code, global_code, function_spaces=None):
+    def on_code_editor_saved_with_spaces(self, node_id, code, global_code, function_spaces=None, execution_mode="inline"):
         node = self._find_node_by_id(node_id)
         if node is None or node.action_type != "code_block":
             return
         if function_spaces is not None:
             self.on_function_spaces_changed(function_spaces)
         params = self._params_for_code_editor_node(node, code)
+        params["execution_mode"] = "process" if str(execution_mode or "").strip().lower() == "process" else "inline"
         self._store_node_params(node, "code_block", params, mark_dirty=True)
         if self._current_live_node() is node:
             panel = self.panel_instances.get("code_block")
@@ -220,7 +230,7 @@ class NodeConfigMixin:
     def on_code_editor_run_requested(self, node_id, code, global_code):
         self.on_code_editor_run_requested_with_spaces(node_id, code, global_code, None)
 
-    def on_code_editor_run_requested_with_spaces(self, node_id, code, global_code, function_spaces=None):
+    def on_code_editor_run_requested_with_spaces(self, node_id, code, global_code, function_spaces=None, execution_mode="inline"):
         node = self._find_node_by_id(node_id)
         if node is None or node.action_type != "code_block":
             return
@@ -229,12 +239,31 @@ class NodeConfigMixin:
         if function_spaces is not None:
             self.on_function_spaces_changed(function_spaces)
         params = self._params_for_code_editor_node(node, code)
+        params["execution_mode"] = "process" if str(execution_mode or "").strip().lower() == "process" else "inline"
         self._store_node_params(node, "code_block", params, mark_dirty=True)
         if self._current_live_node() is node:
             panel = self.panel_instances.get("code_block")
             if panel and hasattr(panel, "set_params"):
                 panel.set_params(self._panel_params_for_node(node))
         self._run_node(node)
+
+    def on_code_editor_stop_requested(self, node_id):
+        self._ensure_single_node_runtime_state()
+        run = self._single_node_run
+        engine = self._single_node_engine
+        panel = getattr(self, "panel_instances", {}).get("code_block")
+        target = str(node_id or "")
+        if not isinstance(run, dict) or str(run.get("node_id") or "") != target or engine is None:
+            if panel and hasattr(panel, "set_code_editor_stopped"):
+                panel.set_code_editor_stopped(target, "当前没有正在运行的代码块。")
+            return
+        run["stop_requested"] = True
+        if hasattr(engine, "request_cancel"):
+            engine.request_cancel()
+        if panel and hasattr(panel, "set_code_editor_stopping"):
+            panel.set_code_editor_stopping(target, "已请求停止；请等待代码块检查 state['run_status'] 后自行退出。")
+        if hasattr(self, "status_label"):
+            self.status_label.setText("已请求停止代码块，等待当前代码自行退出...")
 
     def _on_edge_changed(self):
         """连线变更时刷新当前配置面板的输入列表和列下拉。"""
@@ -606,18 +635,6 @@ class NodeConfigMixin:
                 self._forget_discarded_single_node_engine(engine)
         return bool(running)
 
-    def _clear_single_node_timer(self, run):
-        if not isinstance(run, dict):
-            return
-        timer = run.pop("timer", None)
-        if timer is None:
-            return
-        try:
-            timer.stop()
-            timer.deleteLater()
-        except RuntimeError:
-            pass
-
     def _invalidate_single_node_run(self, message="当前运行已被新操作废弃，后台结果将被忽略"):
         self._ensure_single_node_runtime_state()
         self._single_node_generation += 1
@@ -625,7 +642,6 @@ class NodeConfigMixin:
         engine = self._single_node_engine
         if isinstance(run, dict):
             run["discarded"] = True
-            self._clear_single_node_timer(run)
             panel = getattr(self, "panel_instances", {}).get(str(run.get("node_action") or ""))
             if panel and hasattr(panel, "set_code_editor_run_result"):
                 panel.set_code_editor_run_result(str(run.get("node_id") or ""), False, message)
@@ -687,7 +703,6 @@ class NodeConfigMixin:
         self._ensure_single_node_runtime_state()
         self._single_node_generation += 1
         run = self._single_node_run
-        self._clear_single_node_timer(run)
         engines = []
         if self._single_node_engine is not None:
             engines.append(self._single_node_engine)
@@ -702,7 +717,6 @@ class NodeConfigMixin:
 
     def _release_single_node_run(self, engine):
         run = getattr(self, "_single_node_run", None)
-        self._clear_single_node_timer(run)
         if engine is not None:
             try:
                 if engine.isRunning():
@@ -712,22 +726,6 @@ class NodeConfigMixin:
         if engine is getattr(self, "_single_node_engine", None):
             self._single_node_engine = None
             self._single_node_run = None
-
-    def _single_node_code_timeout_ms(self, workflow_config):
-        return workflow_code_timeout_ms(workflow_config)
-
-    def _on_single_node_timeout(self, generation):
-        run = getattr(self, "_single_node_run", None)
-        if not isinstance(run, dict) or run.get("generation") != generation:
-            return
-        node_title = str(run.get("node_title") or "当前节点")
-        message = (
-            f"{node_title} 运行已超时，结果将被忽略；"
-            "后台线程可能仍在收尾，若是阻塞型代码请等待结束或重启程序。"
-        )
-        if hasattr(self, "status_label"):
-            self.status_label.setText(message)
-        self._invalidate_single_node_run(message)
 
     def _on_single_node_engine_finished(self, success, result_pool):
         run = getattr(self, "_single_node_run", None)
@@ -751,6 +749,13 @@ class NodeConfigMixin:
                 return
 
             if not success:
+                if isinstance(result_pool, dict) and result_pool.get("cancelled"):
+                    message = "代码块已停止。"
+                    if panel and hasattr(panel, "set_code_editor_stopped"):
+                        panel.set_code_editor_stopped(node.node_id, message)
+                    if hasattr(self, "status_label"):
+                        self.status_label.setText(message)
+                    return
                 logs = "\n".join(run.get("logs") or [])
                 message = logs if logs else "节点执行失败"
                 dialog_message = message[-2000:] if len(message) > 2000 else message
@@ -904,13 +909,6 @@ class NodeConfigMixin:
         engine.log_signal.connect(self._on_single_node_engine_log)
         engine.finished_signal.connect(self._on_single_node_engine_finished)
         engine.finished.connect(self._on_single_node_thread_finished)
-        timeout_ms = self._single_node_code_timeout_ms(config)
-        if timeout_ms:
-            timer = QTimer(self)
-            timer.setSingleShot(True)
-            timer.timeout.connect(lambda gen=generation: self._on_single_node_timeout(gen))
-            self._single_node_run["timer"] = timer
-            timer.start(timeout_ms)
         engine.start()
         return True, "已提交后台运行"
 
@@ -996,7 +994,6 @@ class NodeConfigMixin:
                         parameters.update(
                             normalize_runtime_parameters(item.params.get("parameters", {}))
                         )
-                    mappings.update(item.params.get("parameter_mappings", {}) or {})
 
         self.ctx.set_runtime_parameters(parameters, mappings)
         if hasattr(self.ctx, "set_global_code"):

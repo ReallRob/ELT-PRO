@@ -1,10 +1,9 @@
 """Full-workflow run controls for the design mode."""
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QMessageBox, QProgressDialog
 
 from node_editor import NodeItem
-from core.workflow.timeouts import workflow_code_timeout_ms
 
 
 class RunControlsMixin:
@@ -12,6 +11,22 @@ class RunControlsMixin:
         for item in self.canvas_scene.items():
             if hasattr(item, "set_stale"):
                 item.set_stale(False)
+
+    def _set_node_run_status(self, node_id, status):
+        target = str(node_id or "")
+        if not target:
+            return
+        for item in self.canvas_scene.items():
+            if isinstance(item, NodeItem) and str(item.node_id) == target:
+                item.run_status = status
+                item.update()
+                return
+
+    def _clear_node_run_statuses(self):
+        for item in self.canvas_scene.items():
+            if isinstance(item, NodeItem):
+                item.run_status = "idle"
+                item.update()
 
     def run_full_workflow(self):
         if hasattr(self, "_single_node_run_active") and self._single_node_run_active():
@@ -35,58 +50,53 @@ class RunControlsMixin:
             return
 
         total_steps = len(config["steps"])
+        self._clear_node_run_statuses()
 
-        self.progress = QProgressDialog("正在高速全量执行流水线...", None, 0, total_steps, self)
+        self.progress = QProgressDialog("正在高速全量执行流水线...", "停止", 0, total_steps, self)
         self.progress.setWindowTitle("执行中")
         self.progress.setWindowModality(Qt.WindowModal)
         self.progress.setAutoClose(True)
+        self.progress.canceled.connect(self._request_full_run_stop)
         self.progress.show()
         self.ctx.run_full_workflow()
         if self.ctx.engine:
             self.ctx.engine.progress_signal.connect(self.progress.setValue)
-        self._start_full_run_timeout_timer(config)
 
-    def _start_full_run_timeout_timer(self, config):
-        timer = getattr(self, "_full_run_timeout_timer", None)
-        if timer is not None:
-            timer.stop()
-            timer.deleteLater()
-        timeout_ms = workflow_code_timeout_ms(config)
-        self._full_run_timeout_timer = None
-        if not timeout_ms:
+    def _request_full_run_stop(self):
+        engine = getattr(self.ctx, "engine", None)
+        if engine is None or not hasattr(engine, "request_cancel"):
             return
-        timer = QTimer(self)
-        timer.setSingleShot(True)
-        timer.timeout.connect(self._on_full_run_timeout)
-        self._full_run_timeout_timer = timer
-        timer.start(timeout_ms)
-
-    def _stop_full_run_timeout_timer(self):
-        timer = getattr(self, "_full_run_timeout_timer", None)
-        self._full_run_timeout_timer = None
-        if timer is None:
-            return
-        timer.stop()
-        timer.deleteLater()
-
-    def _on_full_run_timeout(self):
-        self._stop_full_run_timeout_timer()
-        if hasattr(self.ctx, "discard_current_workflow_run"):
-            self.ctx.discard_current_workflow_run()
-        if hasattr(self, "progress") and self.progress:
-            self.progress.close()
+        engine.request_cancel()
         if hasattr(self, "status_label"):
-            self.status_label.setText("全量流程已超时，后台结果将被忽略")
-        QMessageBox.warning(self, "运行超时", "全量流程已超过代码块超时时间，结果将被忽略；后台线程可能仍在收尾。")
+            self.status_label.setText("已请求停止，等待当前代码块自行退出...")
+        if hasattr(self, "progress") and self.progress:
+            self.progress.setLabelText("已请求停止，等待当前代码块自行退出...")
+
+    def _close_full_run_progress(self):
+        progress = getattr(self, "progress", None)
+        if progress is None:
+            return
+        try:
+            progress.canceled.disconnect(self._request_full_run_stop)
+        except (TypeError, RuntimeError):
+            pass
+        progress.close()
 
     def _on_full_run_finished(self, success, result_pool):
-        self._stop_full_run_timeout_timer()
-        self.progress.close()
+        self._close_full_run_progress()
+        result_pool = result_pool or {}
+        success_node_ids = set(result_pool.get("success_node_ids") or []) if isinstance(result_pool, dict) else set()
+        failed_node_id = result_pool.get("failed_node_id") if isinstance(result_pool, dict) else ""
+        for node_id in success_node_ids:
+            self._set_node_run_status(node_id, "success")
+        if failed_node_id:
+            self._set_node_run_status(failed_node_id, "error")
         self._update_status_bar()
         if success:
             for item in self.canvas_scene.items():
                 if isinstance(item, NodeItem):
                     item.is_dirty = False
+                    item.run_status = "success"
                     item.update()
             self._clear_all_stale_edges()
             self.refresh_combo_list()
@@ -99,6 +109,11 @@ class RunControlsMixin:
                 if table_name and table_name != "暂无数据":
                     self._render_specific_table(table_name)
         else:
+            if isinstance(result_pool, dict) and result_pool.get("cancelled"):
+                if hasattr(self, "status_label"):
+                    self.status_label.setText("流程已停止")
+                QMessageBox.information(self, "已停止", "已请求停止，当前流程已结束。")
+                return
             QMessageBox.critical(
                 self, "错误", "执行出错，请检查数据完整性或查看执行模式下的日志信息。"
             )

@@ -263,7 +263,7 @@ class CalcPanel(BatchMapFlowPanel):
         col = str(new_col or "结果").strip() or "结果"
         return (
             "df 为当前表，pd/np/re/math 可直接使用\n"
-            "params['参数名'] 取参数，param('参数名', '映射名') 取映射值\n"
+            "params['参数名'] 读取运行参数\n"
             "示例：\n"
             "end = pd.to_datetime(df['结束日期'])\n"
             "start = pd.to_datetime(df['开始日期'])\n"
@@ -291,10 +291,10 @@ class CalcPanel(BatchMapFlowPanel):
         self._update_rule_summary(header_btn, self._calc_rule_summary(name, formula, mode))
 
     def _show_col_menu(self, target_input, mode="formula"):
-        df_name = self._first_enabled_input_name() if hasattr(self, "_first_enabled_input_name") else ""
         cols = []
-        if df_name and df_name in self.data_pool:
-            cols = list(self.data_pool[df_name].columns)
+        df = self._first_enabled_dataframe() if hasattr(self, "_first_enabled_dataframe") else None
+        if df is not None:
+            cols = list(df.columns)
         if not cols:
             QMessageBox.information(self, "提示", "当前目标表无可用列，请先选择数据源。")
             return
@@ -342,7 +342,6 @@ class CalcPanel(BatchMapFlowPanel):
             QMenu::separator { height: 1px; background: #E5EAF0; margin: 4px 8px; }
         """)
         params = sorted((self._runtime_parameters or {}).keys())
-        mappings = sorted((self._parameter_mappings or {}).keys())
         if params:
             for name in params:
                 action = menu.addAction(f"params[{name!r}]")
@@ -354,18 +353,6 @@ class CalcPanel(BatchMapFlowPanel):
         else:
             action = menu.addAction("暂无可用参数")
             action.setEnabled(False)
-
-        if params and mappings:
-            menu.addSeparator()
-            for mapping_name in mappings:
-                for param_name in params:
-                    label = f"param({param_name!r}, {mapping_name!r})"
-                    action = menu.addAction(label)
-                    action.triggered.connect(
-                        lambda checked=False, p=param_name, m=mapping_name: self._insert_text_at_cursor(
-                            line_edit, f"param({p!r}, {m!r})"
-                        )
-                    )
         menu.exec_(line_edit.mapToGlobal(line_edit.rect().bottomRight()))
 
     def set_custom_params(self, p):

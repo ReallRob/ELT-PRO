@@ -13,9 +13,11 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 
 from ui.design.design_mode import DesignModeWidget
+from ui.design.package_manager_page import PackageManagerPage
 from ui.execute.execute_mode import ExecuteModeWidget
 from core.app_paths import get_config_dir, get_workspace_config_path
 from core.qt_wheel_guard import install_combo_wheel_guard
+from core.runtime_extensions import activate_external_extensions
 
 
 CONFIG_DIR = get_config_dir()
@@ -25,7 +27,7 @@ CONFIG_FILE_PATH = get_workspace_config_path()
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Excel ETL 数据工作站 - 专业版")    
+        self.setWindowTitle("RPA_json设计器")
         self.resize(1350, 900)
         self.init_ui()
 
@@ -76,9 +78,11 @@ class MainWindow(QMainWindow):
 
         self.page_design = DesignModeWidget()
         self.page_execute = ExecuteModeWidget()
+        self.page_package_manager = PackageManagerPage()
 
         self.tabs.addTab(self.page_design, "设计模式 (构建规则)")
         self.tabs.addTab(self.page_execute, "执行模式 (自动运行)")
+        self.tabs.addTab(self.page_package_manager, "打包依赖 (开发)")
 
         main_layout.addWidget(self.tabs)
 
@@ -99,6 +103,9 @@ class MainWindow(QMainWindow):
                 saved_mappings = exec_state.get("file_mappings", {})
                 if last_path:
                     self.page_execute.restore_state(last_path, saved_mappings)
+            package_state = state.get("package_manager", {})
+            if hasattr(self.page_package_manager, "restore_state"):
+                self.page_package_manager.restore_state(package_state)
 
         except Exception as e:
             print(f"工作区配置文件加载异常: {e}")
@@ -106,12 +113,22 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         # 1. 先让设计模式写入 dock / 命名 / 可见性状态
         if hasattr(self.page_design, "save_design_state"):
-            self.page_design.save_design_state()
+            if self.page_design.save_design_state() is False:
+                QMessageBox.critical(
+                    self,
+                    "保存失败",
+                    "工作流未能写回原 JSON，已取消关闭以防止修改丢失。",
+                )
+                event.ignore()
+                return
 
         # 2. 收集执行模式状态
         exec_state = {}
         if hasattr(self.page_execute, "get_state"):
             exec_state = self.page_execute.get_state()
+        package_state = {}
+        if hasattr(self.page_package_manager, "get_state"):
+            package_state = self.page_package_manager.get_state()
 
         ok, message = self.shutdown_pages()
         if not ok:
@@ -132,6 +149,7 @@ class MainWindow(QMainWindow):
             **existing,
             "last_mode_index": self.tabs.currentIndex(),
             "execute_mode": exec_state,
+            "package_manager": package_state,
         }
 
         try:
@@ -156,12 +174,16 @@ class MainWindow(QMainWindow):
         if hasattr(self.page_execute, "shutdown_for_close") and not self.page_execute.shutdown_for_close():
             self._shutdown_started = False
             return False, "执行模式仍有后台任务在运行，请等待任务结束后再关闭。"
+        if hasattr(self.page_package_manager, "shutdown_for_close") and not self.page_package_manager.shutdown_for_close():
+            self._shutdown_started = False
+            return False, "打包任务仍在运行，请先停止或等待任务完成。"
         return True, ""
 
 
 if __name__ == "__main__":
     try:
         multiprocessing.freeze_support()
+        activate_external_extensions()
         QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
 

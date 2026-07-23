@@ -173,6 +173,7 @@ class BatchMapFlowPanel(BaseToolPanel):
                     "source_output_id": str(item.get("source_output_id") or f"out_{index}"),
                     "name": name,
                     "data_type": str(item.get("data_type") or self.input_data_type),
+                    "data_key": str(item.get("data_key") or ""),
                 }
             )
         return rows
@@ -224,6 +225,7 @@ class BatchMapFlowPanel(BaseToolPanel):
                     "source_output_id": incoming.get("source_output_id", f"out_{index}"),
                     "name": incoming.get("name", ""),
                     "data_type": incoming.get("data_type", self.input_data_type),
+                    "data_key": incoming.get("data_key", ""),
                     "enabled": bool(saved.get("enabled", True)),
                 }
             )
@@ -256,6 +258,7 @@ class BatchMapFlowPanel(BaseToolPanel):
         row.setProperty("source_node_id", item.get("source_node_id", ""))
         row.setProperty("source_output_id", item.get("source_output_id", ""))
         row.setProperty("data_type", item.get("data_type", self.input_data_type))
+        row.setProperty("data_key", item.get("data_key", ""))
         layout = QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
@@ -357,6 +360,7 @@ class BatchMapFlowPanel(BaseToolPanel):
                     "source_output_id": str(row.property("source_output_id") or f"out_{index}"),
                     "name": name,
                     "data_type": str(row.property("data_type") or self.input_data_type),
+                    "data_key": str(row.property("data_key") or ""),
                     "enabled": checkbox.isChecked() if checkbox else True,
                 }
             )
@@ -421,6 +425,22 @@ class BatchMapFlowPanel(BaseToolPanel):
                 return item.get("name", "")
         return ""
 
+    def _first_enabled_input(self):
+        for item in self._collect_flow_inputs():
+            if item.get("enabled", True):
+                return item
+        return None
+
+    def _first_enabled_dataframe(self):
+        item = self._first_enabled_input()
+        if not item:
+            return None
+        for key in (item.get("data_key"), item.get("name")):
+            key = str(key or "").strip()
+            if key and key in self.data_pool:
+                return self.data_pool.get(key)
+        return None
+
     def _refresh_df_summary_now(self):
         count = len([item for item in self._collect_flow_inputs() if item.get("enabled", True)])
         if hasattr(self, "panel_hint"):
@@ -429,8 +449,7 @@ class BatchMapFlowPanel(BaseToolPanel):
     def _refresh_col_combos_now(self):
         if not hasattr(self, "_col_combos"):
             return
-        df_name = self._first_enabled_input_name()
-        df = self.data_pool.get(df_name) if df_name else None
+        df = self._first_enabled_dataframe()
         self._refresh_col_combos_from_df(df)
 
 

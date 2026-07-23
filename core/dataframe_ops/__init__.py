@@ -6,7 +6,7 @@ from core.dataframe_ops.clean import clean_data, drop_duplicates, sample_data
 from core.dataframe_ops.code_block import code_block
 from core.dataframe_ops.columns import map_col, normalize_columns
 from core.dataframe_ops.filter import filter_data
-from core.dataframe_ops.io import CSV_SHEET_LABEL, export_df, read_source_file
+from core.dataframe_ops.io import CSV_SHEET_LABEL, export_df, export_tables, read_source_file
 from core.dataframe_ops.select import get_col_data, sort_data
 from core.dataframe_ops.table import concat_rows, left_join, transpose_data
 
@@ -33,5 +33,6 @@ __all__ = [
     "sample_data",
     "read_source_file",
     "export_df",
+    "export_tables",
     "CSV_SHEET_LABEL",
 ]

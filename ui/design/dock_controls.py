@@ -3,6 +3,13 @@
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QWidget
 
+from ui.design.layout_constants import (
+    CONFIG_DOCK_DEFAULT_WIDTH,
+    CONFIG_DOCK_MIN_WIDTH,
+    PREVIEW_DOCK_DEFAULT_HEIGHT,
+    TOOLBOX_DOCK_DEFAULT_WIDTH,
+)
+
 
 class DockControlsMixin:
     def _show_view_menu(self):
@@ -30,6 +37,7 @@ class DockControlsMixin:
         self.dock_toolbox.setFloating(False)
         self.dock_preview.setFloating(False)
         self.dock_config.setFloating(False)
+        self.dock_config.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
         self.dock_main.addDockWidget(Qt.LeftDockWidgetArea, self.dock_toolbox)
         self.dock_main.addDockWidget(Qt.RightDockWidgetArea, self.dock_config)
         self.dock_main.addDockWidget(Qt.BottomDockWidgetArea, self.dock_preview)
@@ -37,9 +45,11 @@ class DockControlsMixin:
         self.dock_config.show()
         self.dock_preview.show()
         self.dock_main.resizeDocks(
-            [self.dock_toolbox, self.dock_config], [240, 360], Qt.Horizontal
+            [self.dock_toolbox, self.dock_config],
+            [TOOLBOX_DOCK_DEFAULT_WIDTH, CONFIG_DOCK_DEFAULT_WIDTH],
+            Qt.Horizontal,
         )
-        self.dock_main.resizeDocks([self.dock_preview], [220], Qt.Vertical)
+        self.dock_main.resizeDocks([self.dock_preview], [PREVIEW_DOCK_DEFAULT_HEIGHT], Qt.Vertical)
         # 清除窗口置顶标志，避免重置后浮窗仍压在主窗口上。
         for dock in self._all_docks:
             if dock.isFloating():

@@ -16,10 +16,29 @@ import utils
 from core.workflow.schema import operation_display_name
 
 
+def _dedupe_names(names, fallback=""):
+    result = []
+    seen = set()
+    for name in names or []:
+        text = str(name or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    fallback = str(fallback or "").strip()
+    if not result and fallback:
+        result.append(fallback)
+    return result
+
+
 class ExecuteNodeItem(QGraphicsPathItem):
-    def __init__(self, table_name, text, action_type=""):
+    def __init__(self, table_name, text, action_type="", output_names=None, node_id=""):
         super().__init__()
-        self.table_name = table_name
+        self.display_name = str(text or table_name or "")
+        self.node_id = str(node_id or "")
+        self.output_names = _dedupe_names(output_names, table_name or text)
+        self.table_name = self.output_names[0] if self.output_names else str(table_name or "")
+        self.available_output_names = []
         self.action_type = action_type
         self.status = "pending"
         self.has_data = False
@@ -31,7 +50,7 @@ class ExecuteNodeItem(QGraphicsPathItem):
         text_width = metrics.boundingRect(text).width()
         self.width = min(max(160, text_width + 40), 350)
         self.height = 60
-        self.setToolTip(f"[{action_type}] {text}")
+        self._refresh_tooltip()
 
         self.setAcceptHoverEvents(True)
 
@@ -51,6 +70,19 @@ class ExecuteNodeItem(QGraphicsPathItem):
         self.type_item.setDefaultTextColor(Qt.white)
         self.type_item.setPos(5, 2)
 
+    def _refresh_tooltip(self):
+        output_text = "、".join(self.output_names)
+        suffix = f"\n输出: {output_text}" if output_text else ""
+        self.setToolTip(f"[{self.action_type}] {self.display_name}{suffix}")
+
+    def set_output_names(self, output_names):
+        names = _dedupe_names(output_names, self.display_name)
+        self.output_names = names
+        self.table_name = names[0] if names else self.display_name
+        self.available_output_names = []
+        self._refresh_tooltip()
+        self.update()
+
     def set_status(self, status):
         self.status = status
         self.update()
@@ -64,7 +96,7 @@ class ExecuteNodeItem(QGraphicsPathItem):
         status_colors = {
             "pending": ("#607D8B", "#B0BEC5"),
             "success": ("#43A047", "#66BB6A"),
-            "error":   ("#E53935", "#EF5350"),
+            "error": ("#E53935", "#EF5350"),
         }
         header_color, border_color = status_colors.get(self.status, status_colors["pending"])
 
@@ -96,18 +128,20 @@ class ExecuteNodeItem(QGraphicsPathItem):
                 painter.setPen(QPen(QColor("#4CAF50")))
                 painter.drawText(
                     QRectF(self.width - 42, self.height - 18, 36, 16),
-                    Qt.AlignRight | Qt.AlignVCenter, "OK"
+                    Qt.AlignRight | Qt.AlignVCenter,
+                    "OK",
                 )
             else:
                 painter.setPen(QPen(QColor("#BDBDBD")))
                 painter.drawText(
                     QRectF(self.width - 42, self.height - 18, 36, 16),
-                    Qt.AlignRight | Qt.AlignVCenter, "~"
+                    Qt.AlignRight | Qt.AlignVCenter,
+                    "~",
                 )
 
 
 class WorkflowGraphView(QGraphicsView):
-    node_clicked = pyqtSignal(str, bool)
+    node_clicked = pyqtSignal(object, bool)
     request_export = pyqtSignal(str)
 
     def __init__(self):
@@ -166,7 +200,7 @@ class WorkflowGraphView(QGraphicsView):
                 if isinstance(output, dict) and output.get("name")
             ]
             preview_key = output_names[0] if output_names else display_name
-            item = ExecuteNodeItem(preview_key, display_name, act_zh)
+            item = ExecuteNodeItem(preview_key, display_name, act_zh, output_names, node_id)
             self.scene.addItem(item)
             unique_items.append(item)
 
@@ -174,12 +208,12 @@ class WorkflowGraphView(QGraphicsView):
             for output_name in output_names:
                 self.node_items_dict[output_name] = item
             if node_id:
-                self.node_items_dict[node_id] = item
+                self.node_items_dict[str(node_id)] = item
 
             item_edges_out[item] = []
 
         for step in steps:
-            curr_id = step.get("node_id")
+            curr_id = str(step.get("node_id") or "")
             curr_item = self.node_items_dict.get(curr_id)
             if not curr_item:
                 continue
@@ -188,7 +222,7 @@ class WorkflowGraphView(QGraphicsView):
             deps = []
             for input_item in params.get("inputs", []) or []:
                 if isinstance(input_item, dict) and input_item.get("source_node_id"):
-                    deps.append(input_item["source_node_id"])
+                    deps.append(str(input_item["source_node_id"]))
 
             for dep in deps:
                 dep_item = self.node_items_dict.get(dep)
@@ -229,8 +263,25 @@ class WorkflowGraphView(QGraphicsView):
         arrow_item.setZValue(-1)
 
     def set_all_nodes_status(self, status):
-        for item in self.node_items_dict.values():
+        for item in set(self.node_items_dict.values()):
             item.set_status(status)
+
+    def update_node_output_names(self, output_key_map):
+        if not isinstance(output_key_map, dict):
+            return
+        for node_id, outputs in output_key_map.items():
+            node_id = str(node_id or "")
+            item = self.node_items_dict.get(node_id)
+            if not isinstance(item, ExecuteNodeItem) or not isinstance(outputs, dict):
+                continue
+            names = [name for name in outputs.values() if name]
+            if not names:
+                continue
+            item.set_output_names(names)
+            if item.node_id:
+                self.node_items_dict[item.node_id] = item
+            for name in names:
+                self.node_items_dict[name] = item
 
     def mousePressEvent(self, event):
         item = self.itemAt(event.pos())
@@ -238,7 +289,7 @@ class WorkflowGraphView(QGraphicsView):
             item = item.parentItem()
 
         if isinstance(item, ExecuteNodeItem):
-            self.node_clicked.emit(item.table_name, False)
+            self.node_clicked.emit(list(item.output_names or [item.table_name]), False)
         elif event.button() == Qt.MiddleButton:
             self._is_panning = True
             self._pan_start = event.pos()
@@ -272,20 +323,33 @@ class WorkflowGraphView(QGraphicsView):
 
         if isinstance(item, ExecuteNodeItem) and item.table_name:
             menu = QMenu()
+            output_names = list(item.output_names or [item.table_name])
+            available_names = set(getattr(item, "available_output_names", []) or [])
 
-            if item.status == "success" and not item.has_data:
+            if item.status == "success" and item.has_data:
+                for output_name in output_names:
+                    if output_name in available_names:
+                        export_act = QAction(f"[导出] 保存节点数据: {output_name}", self)
+                        export_act.triggered.connect(
+                            lambda _checked=False, name=output_name: self.request_export.emit(name)
+                        )
+                    else:
+                        export_act = QAction(f"[无数据] 内存已释放: {output_name}", self)
+                        export_act.setEnabled(False)
+                    menu.addAction(export_act)
+            elif item.status == "success":
                 export_act = QAction(f"[无数据] 内存已释放: {item.table_name}", self)
                 export_act.setEnabled(False)
+                menu.addAction(export_act)
             elif item.status == "pending" or item.status == "error":
                 export_act = QAction(f"[未就绪] 暂无结果: {item.table_name}", self)
                 export_act.setEnabled(False)
+                menu.addAction(export_act)
             else:
                 export_act = QAction(f"[导出] 保存此节点数据: {item.table_name}", self)
-                export_act.triggered.connect(
-                    lambda: self.request_export.emit(item.table_name)
-                )
+                export_act.triggered.connect(lambda: self.request_export.emit(item.table_name))
+                menu.addAction(export_act)
 
-            menu.addAction(export_act)
             menu.exec_(event.globalPos())
 
     def wheelEvent(self, event):

@@ -24,6 +24,7 @@ from PyQt5.QtWidgets import (
 
 from parameter_input import ParameterTextEdit, ParameterTextInput
 from parameter_resolver import clone_resolved_runtime_value
+from ui.design.layout_constants import CONFIG_DOCK_MIN_WIDTH
 
 QLineEdit = ParameterTextInput
 
@@ -40,6 +41,7 @@ class BaseToolPanel(QWidget):
     _COL_REF_ROLE = Qt.UserRole
     _COL_POSITION_ROLE = Qt.UserRole + 1
     _COL_NAME_ROLE = Qt.UserRole + 2
+    _INPUT_REF_ROLE = Qt.UserRole + 20
 
     def __init__(self, data_pool, parent=None):
         super().__init__(parent)
@@ -73,6 +75,18 @@ class BaseToolPanel(QWidget):
             return "#{:02X}{:02X}{:02X}".format(*mixed)
         except Exception:
             return "#F4F7FB"
+
+    @staticmethod
+    def _set_combo_placeholder(combo, placeholder):
+        """Set a QComboBox placeholder while staying compatible with PyQt5 5.11."""
+        if combo is None:
+            return
+        setter = getattr(combo, "setPlaceholderText", None)
+        if callable(setter):
+            setter(str(placeholder or ""))
+        line_edit = combo.lineEdit() if hasattr(combo, "lineEdit") else None
+        if line_edit is not None:
+            line_edit.setPlaceholderText(str(placeholder or ""))
 
     def set_panel_context(self, action_key="", node_title=""):
         self._panel_action_key = action_key or ""
@@ -144,7 +158,7 @@ class BaseToolPanel(QWidget):
         if line_edit.property("_param_action_installed"):
             return
         action = QAction(self._parameter_action_icon(), "引用参数", line_edit)
-        action.setToolTip("引用运行参数或映射")
+        action.setToolTip("引用运行参数")
         action.triggered.connect(lambda checked=False, le=line_edit: self._show_parameter_menu(le))
         line_edit.addAction(action, QLineEdit.TrailingPosition)
         line_edit.setProperty("_param_action_installed", True)
@@ -187,7 +201,6 @@ class BaseToolPanel(QWidget):
             QMenu::separator { height: 1px; background: #E5EAF0; margin: 4px 8px; }
         """)
         params = sorted((self._runtime_parameters or {}).keys())
-        mappings = sorted((self._parameter_mappings or {}).keys())
 
         if params:
             for name in params:
@@ -200,22 +213,6 @@ class BaseToolPanel(QWidget):
                 )
         else:
             action = menu.addAction("暂无可用参数")
-            action.setEnabled(False)
-
-        if params and mappings:
-            menu.addSeparator()
-            for mapping_name in mappings:
-                for param_name in params:
-                    label = f"{param_name}（映射）" if param_name == mapping_name else f"{param_name} → {mapping_name}"
-                    action = menu.addAction(label)
-                    action.setToolTip("插入 ${" + param_name + "|map:" + mapping_name + "}")
-                    action.triggered.connect(
-                        lambda checked=False, p=param_name, m=mapping_name: self._insert_text_at_cursor(
-                            line_edit, "${" + p + "|map:" + m + "}"
-                        )
-                    )
-        elif mappings:
-            action = menu.addAction("先定义参数后再引用映射")
             action.setEnabled(False)
 
         return menu
@@ -287,6 +284,7 @@ class BaseToolPanel(QWidget):
     def _init_base_ui(self):
         soft_theme = self._mix_hex_color(self.theme_color, "#FFFFFF", 0.90)
         softer_theme = self._mix_hex_color(self.theme_color, "#FFFFFF", 0.96)
+        self.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(0)
@@ -300,7 +298,7 @@ class BaseToolPanel(QWidget):
         )
 
         self.content_widget = QWidget()
-        self.content_widget.setMinimumWidth(0)
+        self.content_widget.setMinimumWidth(CONFIG_DOCK_MIN_WIDTH)
         self.content_widget.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.content_widget.setStyleSheet(
             "background: #F3F6FA;"
@@ -491,9 +489,10 @@ class BaseToolPanel(QWidget):
         self.top_form.setVerticalSpacing(8)
         self.top_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         has_top = True
+        self.top_card = None
         if has_top:
-            top_card, top_inner = self._make_card("基础配置")
-            self.main_layout.addWidget(top_card)
+            self.top_card, top_inner = self._make_card("基础配置")
+            self.main_layout.addWidget(self.top_card)
             top_inner.addLayout(self.top_form)
 
         self.operation_name_input = QLineEdit()
@@ -504,6 +503,7 @@ class BaseToolPanel(QWidget):
             self.df_combo = QComboBox()
             self.combo_boxes_to_update.append(self.df_combo)
             self.df_combo.currentTextChanged.connect(self._on_df_combo_changed)
+            self.df_combo.currentIndexChanged.connect(self._on_df_combo_changed)
             self.top_form.addRow("目标表:", self.df_combo)
             self._df_row_label = self.top_form.labelForField(self.df_combo)
             self.df_summary = QLabel("未选择数据表")
@@ -621,6 +621,16 @@ class BaseToolPanel(QWidget):
                 return item
         return None
 
+    def _combo_input_ref(self, combo):
+        if combo is None:
+            return None
+        try:
+            index = combo.currentIndex()
+            data = combo.itemData(index, self._INPUT_REF_ROLE) if index >= 0 else None
+        except RuntimeError:
+            return None
+        return copy.deepcopy(data) if isinstance(data, dict) else None
+
     @staticmethod
     def _input_ref_key(item):
         return (
@@ -638,18 +648,41 @@ class BaseToolPanel(QWidget):
     def _remember_current_input_ref(self):
         if not hasattr(self, "df_combo"):
             return
-        ref = self._input_ref_for_name(self.df_combo.currentText())
+        ref = self._combo_input_ref(self.df_combo) or self._input_ref_for_name(self.df_combo.currentText())
         self.df_combo.setProperty("source_node_id", str((ref or {}).get("source_node_id") or ""))
         self.df_combo.setProperty("source_output_id", str((ref or {}).get("source_output_id") or "out_1"))
+        self.df_combo.setProperty("data_key", str((ref or {}).get("data_key") or (ref or {}).get("name") or ""))
 
     def _current_input_ref(self):
         if not hasattr(self, "df_combo"):
             return None
+        combo_ref = self._combo_input_ref(self.df_combo)
+        if combo_ref:
+            return combo_ref
         ref = self._input_ref_for_key(
             self.df_combo.property("source_node_id"),
             self.df_combo.property("source_output_id"),
         )
         return ref or self._input_ref_for_name(self.df_combo.currentText())
+
+    def _current_dataframe(self):
+        ref = self._current_input_ref()
+        candidates = []
+        if ref:
+            candidates.extend([
+                ref.get("data_key"),
+                ref.get("name"),
+            ])
+        if hasattr(self, "df_combo"):
+            candidates.extend([
+                self.df_combo.property("data_key"),
+                self.df_combo.currentText(),
+            ])
+        for key in candidates:
+            key = str(key or "").strip()
+            if key and key in self.data_pool:
+                return self.data_pool.get(key)
+        return None
 
     def _saved_input_for_basic_field(self, params):
         inputs = [item for item in (params or {}).get("inputs") or [] if isinstance(item, dict)]
@@ -663,13 +696,10 @@ class BaseToolPanel(QWidget):
         if not self.use_df or not hasattr(self, "df_combo") or not isinstance(input_item, dict):
             return
         name = str(input_item.get("name") or "").strip()
-        self._set_combo_items_preserving_text(
-            self.df_combo,
-            [self.df_combo.itemText(i) for i in range(self.df_combo.count())],
-            name,
-        )
         self.df_combo.setProperty("source_node_id", str(input_item.get("source_node_id") or ""))
         self.df_combo.setProperty("source_output_id", str(input_item.get("source_output_id") or "out_1"))
+        self._set_input_combo_items(self.df_combo, self._incoming_outputs, name)
+        self._remember_current_input_ref()
         self._refresh_df_summary()
 
     def _default_output_name(self, input_name):
@@ -748,7 +778,9 @@ class BaseToolPanel(QWidget):
                 self.panel_hint.setText("节点配置")
             return
         df_name = self.df_combo.currentText().strip() if hasattr(self, "df_combo") else ""
-        df = self.data_pool.get(df_name) if df_name else None
+        ref = self._current_input_ref()
+        df_name = str((ref or {}).get("name") or df_name).strip()
+        df = self._current_dataframe()
         if df is None:
             self.df_summary.setText("未选择数据表")
             if hasattr(self, "panel_hint"):
@@ -940,6 +972,43 @@ class BaseToolPanel(QWidget):
             combo.setCurrentIndex(0)
         combo.blockSignals(False)
 
+    def _set_input_combo_items(self, combo, refs, preferred_text=None):
+        current_text = str(preferred_text if preferred_text is not None else combo.currentText()).strip()
+        current_key = (
+            str(combo.property("source_node_id") or ""),
+            str(combo.property("source_output_id") or "out_1"),
+        )
+        combo.blockSignals(True)
+        combo.clear()
+        selected_index = -1
+        for item in refs or []:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            combo.addItem(name)
+            row = combo.count() - 1
+            combo.setItemData(row, copy.deepcopy(item), self._INPUT_REF_ROLE)
+            combo.setItemData(
+                row,
+                f"source: {item.get('source_node_id', '')}/{item.get('source_output_id', 'out_1')}",
+                Qt.ToolTipRole,
+            )
+            key = self._input_ref_key(item)
+            if current_key[0] and key == current_key:
+                selected_index = row
+            elif selected_index < 0 and current_text and name == current_text:
+                selected_index = row
+        if selected_index >= 0:
+            combo.setCurrentIndex(selected_index)
+        elif current_text:
+            combo.addItem(current_text)
+            combo.setCurrentIndex(combo.count() - 1)
+        elif combo.count() > 0:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
     def _get_col_name(self, combo):
         """Return the column reference used by the current matching mode."""
         if combo is None:
@@ -986,7 +1055,11 @@ class BaseToolPanel(QWidget):
             text = widget.text().strip()
         if not text:
             self._show_field_error(widget, True)
-            widget.setPlaceholderText(f"必填: {label}" if label else "此项必填")
+            placeholder = f"必填: {label}" if label else "此项必填"
+            if isinstance(widget, QComboBox):
+                self._set_combo_placeholder(widget, placeholder)
+            else:
+                widget.setPlaceholderText(placeholder)
             return False
         self._show_field_error(widget, False)
         return True
@@ -1109,9 +1182,7 @@ class BaseToolPanel(QWidget):
         """创建可编辑的列名下拉框。dtype_filter: 'numeric'/'datetime'/'string'/None(全部)"""
         combo = QComboBox()
         combo.setEditable(True)
-        combo.setPlaceholderText(placeholder)
-        if combo.lineEdit():
-            combo.lineEdit().setPlaceholderText(placeholder)
+        self._set_combo_placeholder(combo, placeholder)
         combo.setMinimumWidth(96)
         combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         if not hasattr(self, "_col_combos"):
@@ -1183,8 +1254,7 @@ class BaseToolPanel(QWidget):
         """根据当前选中的 DataFrame 刷新所有列名下拉框"""
         if not hasattr(self, "_col_combos"):
             return
-        df_name = self.df_combo.currentText() if self.use_df else ""
-        df = self.data_pool.get(df_name) if df_name else None
+        df = self._current_dataframe() if self.use_df else None
         self._refresh_col_combos_from_df(df)
 
     def update_combos(self, table_names):
@@ -1192,7 +1262,10 @@ class BaseToolPanel(QWidget):
         try:
             self._incoming_tables = list(table_names or [])
             for combo in self.combo_boxes_to_update:
-                self._set_combo_items_preserving_text(combo, table_names)
+                if combo is getattr(self, "df_combo", None) and self._incoming_outputs:
+                    self._set_input_combo_items(combo, self._incoming_outputs)
+                else:
+                    self._set_combo_items_preserving_text(combo, table_names)
             self._remember_current_input_ref()
             self._refresh_df_summary()
             self._refresh_col_combos()

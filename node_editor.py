@@ -72,6 +72,7 @@ class NodeItem(QGraphicsItem):
         self.edges_out = []
         self.params = {}
         self.is_dirty = False
+        self.run_status = "idle"
         self.setZValue(1)
 
     def has_input_port(self):
@@ -89,6 +90,10 @@ class NodeItem(QGraphicsItem):
         # 绘制主节点框
         if self.isSelected():
             pen = QPen(QColor("#0284C7"), 3)
+        elif self.run_status == "error":
+            pen = QPen(QColor("#DC2626"), 3)
+        elif self.run_status == "success":
+            pen = QPen(QColor("#16A34A"), 3)
         elif self.is_dirty:
             pen = QPen(QColor("#FFC107"), 3)
         else:
@@ -108,7 +113,14 @@ class NodeItem(QGraphicsItem):
 
         # 绘制标题栏背景
         painter.setPen(Qt.NoPen)
-        header_color = QColor("#0284C7") if self.isSelected() else QColor(self.color)
+        if self.isSelected():
+            header_color = QColor("#0284C7")
+        elif self.run_status == "error":
+            header_color = QColor("#DC2626")
+        elif self.run_status == "success":
+            header_color = QColor("#16A34A")
+        else:
+            header_color = QColor(self.color)
         painter.setBrush(QBrush(header_color))
         header_rect = QRectF(0, 0, self.width, 24)
         painter.drawRoundedRect(header_rect, 5, 5)
@@ -322,6 +334,8 @@ class NodeCanvasScene(QGraphicsScene):
             return 2
         if node.action_type == "save_template":
             return 1
+        if node.action_type == "export_df":
+            return 10000
         if node.action_type in BATCH_MAP_ACTIONS:
             return 10000
         if node.action_type in ("left_join", "concat_rows"):
